@@ -1,5 +1,5 @@
 project(ODAS)
-cmake_minimum_required(VERSION 2.4.6..3.16)
+cmake_minimum_required(VERSION 2.4.6...3.26)
 
 if(COMMAND cmake_policy)
     cmake_policy(SET CMP0003 NEW)

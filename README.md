@@ -7,6 +7,19 @@ The [ODAS wiki](https://github.com/introlab/odas/wiki) describes how to build an
 
 ROS: Please visite the [odas_ros project](https://github.com/introlab/odas_ros).
 
+## miniDSP UMA-8 v2 AoA 可视化
+
+本工作区已将 UMA-8 v2 实时 AoA 可视化器直接整合进 ODAS 项目。
+Python 包位于 `uma8_visualizer/`，配置、工具、测试和 ODAS 共用当前项目根目录。启动方式：
+
+```bash
+cd /home/w/project/odas
+./run.sh
+```
+
+硬件映射、参数、离线回放和故障排查请参阅
+[`docs/UMA8_AOA_VISUALIZER.md`](docs/UMA8_AOA_VISUALIZER.md)。
+
 [![ODAS Demonstration](https://img.youtube.com/vi/n7y2rLAnd5I/0.jpg)](https://youtu.be/n7y2rLAnd5I)
 
 # License

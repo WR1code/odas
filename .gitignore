@@ -9,6 +9,7 @@ simulation/output/
 .venv/
 .deps/
 rir_capture/output/
+avtwin_linux/output/
 
 # Local runtime, generated translation, and literature artifacts
 /logs/

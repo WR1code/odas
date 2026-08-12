@@ -20,6 +20,17 @@ cd /home/w/project/odas
 硬件映射、参数、离线回放和故障排查请参阅
 [`docs/UMA8_AOA_VISUALIZER.md`](docs/UMA8_AOA_VISUALIZER.md)。
 
+## AV-Twin 双向 chirp Linux 主控端
+
+带 C1/C2 文件选择、独立输入/输出设备选择和实时 8 通道电平的界面：
+
+```bash
+./avtwin_linux/run.sh --gui
+```
+
+完整 CLI、实验输出与安全说明见
+[`avtwin_linux/README.md`](avtwin_linux/README.md)。
+
 [![ODAS Demonstration](https://img.youtube.com/vi/n7y2rLAnd5I/0.jpg)](https://youtu.be/n7y2rLAnd5I)
 
 # License

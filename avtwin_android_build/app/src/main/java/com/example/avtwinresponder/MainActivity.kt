@@ -51,6 +51,8 @@ class MainActivity : Activity() {
     private lateinit var folderInfo: TextView
     private lateinit var status: TextView
     private lateinit var metrics: TextView
+    private lateinit var toggleLog: Button
+    private lateinit var clearLog: Button
     private lateinit var host: EditText
     private lateinit var controlPort: EditText
     private lateinit var resultPort: EditText
@@ -79,6 +81,7 @@ class MainActivity : Activity() {
     private var resultTreeUri: Uri? = null
     private var responder: AcousticResponder? = null
     private var paused = false
+    private var logCollapsed = false
     private var poseRevision = 0L
     @Volatile private var currentPose: ManualPose = ManualPose.origin()
     private val logBuffer = StringBuilder()
@@ -116,7 +119,7 @@ class MainActivity : Activity() {
             setPadding(dp(18), dp(14), dp(18), dp(14))
         }
         root.addView(TextView(this).apply {
-            text = "AV-Twin Continuous Acoustic Responder v0.9.0 ACK+POSE"
+            text = "AV-Twin Continuous Acoustic Responder v0.9.1 ACK+POSE"
             textSize = 21f
             gravity = Gravity.CENTER_HORIZONTAL
         })
@@ -277,13 +280,26 @@ class MainActivity : Activity() {
         })
         val testRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         udpTest = Button(this).apply { text = "UDP 双向检验"; setOnClickListener { runUdpTest() } }
-        c2Test = Button(this).apply { text = "TEST C2 x20"; setOnClickListener { runC2Test() } }
+        c2Test = Button(this).apply { text = "TEST C2（单次）"; setOnClickListener { runC2Test() } }
         testRow.addView(udpTest, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         testRow.addView(c2Test, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         root.addView(testRow)
 
         metrics = TextView(this).apply { textSize = 13f; setTextIsSelectable(true); setPadding(0, dp(6), 0, dp(4)) }
         root.addView(metrics)
+        root.addView(sectionTitle("5. 运行日志"))
+        val logControls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        toggleLog = Button(this).apply {
+            text = "折叠日志"
+            setOnClickListener { toggleLogVisibility() }
+        }
+        clearLog = Button(this).apply {
+            text = "删除日志"
+            setOnClickListener { clearVisibleLog() }
+        }
+        logControls.addView(toggleLog, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        logControls.addView(clearLog, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        root.addView(logControls)
         status = TextView(this).apply { textSize = 12f; setTextIsSelectable(true) }
         root.addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
@@ -393,7 +409,7 @@ class MainActivity : Activity() {
         responder = makeResponder()
         setProbeControls(false)
         c2Test.isEnabled = false
-        responder!!.startRepeatedPlaybackTest()
+        responder!!.startSinglePlaybackTest()
     }
 
     private fun makeResponder(): AcousticResponder = AcousticResponder(
@@ -647,6 +663,18 @@ class MainActivity : Activity() {
         logBuffer.append(message).append('\n')
         if (logBuffer.length > 24000) logBuffer.delete(0, 6000)
         status.text = logBuffer.toString()
+    }
+
+    private fun toggleLogVisibility() {
+        logCollapsed = !logCollapsed
+        status.visibility = if (logCollapsed) android.view.View.GONE else android.view.View.VISIBLE
+        toggleLog.text = if (logCollapsed) "展开日志" else "折叠日志"
+    }
+
+    private fun clearVisibleLog() {
+        logBuffer.setLength(0)
+        status.text = ""
+        Toast.makeText(this, "当前界面日志已删除", Toast.LENGTH_SHORT).show()
     }
 
     private fun ensurePermissionForAction(): Boolean {

@@ -155,9 +155,9 @@ class AcousticResponder(
     fun isRunning(): Boolean = running.get()
     fun isTestRunning(): Boolean = testRunning.get()
 
-    fun startRepeatedPlaybackTest() {
+    fun startSinglePlaybackTest() {
         if (running.get() || !testRunning.compareAndSet(false, true)) return
-        thread(name = "AVTwin-C2-x20") {
+        thread(name = "AVTwin-C2-once") {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
             var p: PersistentC2Player? = null
             try {
@@ -165,27 +165,23 @@ class AcousticResponder(
                 p = PersistentC2Player(
                     samples = c2Signal.samples,
                     preferredOutput = AudioRouteUtil.preferredBuiltinSpeaker(manager),
-                    onLog = { onStatus("C2 x20 TEST\n$it") }
+                    onLog = { onStatus("C2 TEST（单次）\n$it") }
                 )
                 val prep = p.prepare()
                 val lines = ArrayList<String>()
-                lines += "C2 x20 persistent AudioTrack test"
+                lines += "C2 single-play AudioTrack test"
                 lines += "state=${prep.trackState} performanceMode=${prep.performanceMode} frames=${prep.writtenFrames}"
-                for (i in 1..20) {
-                    val v = p.playAndVerify()
-                    val pass = v.playbackVerified
-                    lines += "[$i/20] ${if (pass) "PASS" else "FAIL"} head=${v.playbackHeadBefore}->${v.playbackHeadAfter} ts=${v.audioTimestampValid} route=${v.actualOutputRoute}"
-                    onStatus(lines.joinToString("\n"))
-                    if (i < 20) p.rearmForNextPlayback()
-                }
-                val passCount = lines.count { it.contains("] PASS") }
-                lines += "RESULT: $passCount/20 hardware-verified"
+                val verification = p.playAndVerify()
+                val pass = verification.playbackVerified
+                lines += "${if (pass) "PASS" else "FAIL"} head=${verification.playbackHeadBefore}->${verification.playbackHeadAfter} ts=${verification.audioTimestampValid} route=${verification.actualOutputRoute}"
+                lines += "RESULT: ${if (pass) "hardware-verified" else "playback-not-verified"}"
                 onStatus(lines.joinToString("\n"))
             } catch (t: Throwable) {
-                onStatus("C2 x20 TEST ERROR: ${t.javaClass.simpleName}: ${t.message}")
+                onStatus("C2 TEST ERROR: ${t.javaClass.simpleName}: ${t.message}")
             } finally {
                 p?.release()
                 testRunning.set(false)
+                onStatus("C2 single-play test finished")
             }
         }
     }

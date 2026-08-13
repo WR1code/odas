@@ -1,6 +1,9 @@
 # Local UI clarity update
 
-AV-Twin Android Responder v0.9.0 ACK+POSE.
+AV-Twin Android Responder v0.9.1 ACK+POSE.
+
+- 运行日志可以折叠、展开或清空当前界面缓存。
+- C2 测试改为每次点击只播放一次。
 
 - Separates the Android ARM listening address from the Linux result destination.
 - Labels both UDP directions and ports in Chinese.

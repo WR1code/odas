@@ -1,0 +1,50 @@
+task: regression
+
+experiment:
+  name: rir_regression_baseline
+  seed: 42
+  output_root: ./runs
+
+data:
+  input_root: ../avtwin_linux/output
+  dataset_csv: ./artifacts/dataset_real/dataset.csv
+  sample_rate: 48000
+  rir_duration_ms: 500
+  channels: [0, 1, 2, 3, 4, 5, 6]
+  normalization: none
+  speed_of_sound_mps: 343.0
+  near_duplicate_distance_m: 0.05
+  inactive_epsilon: 1.0e-12
+
+split:
+  mode: sequential
+  train_ratio: 0.7
+  val_ratio: 0.1
+  test_ratio: 0.2
+  spatial_block_size_m: 0.5
+
+model:
+  type: regression_1dcnn
+  base_channels: 32
+  dropout: 0.2
+  use_tof_feature: false
+
+classification:
+  grid_size_m: 0.25
+
+training:
+  batch_size: 32
+  epochs: 100
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  optimizer: adamw
+  loss: smooth_l1
+  amp: true
+  gradient_clip_norm: 5.0
+  scheduler_factor: 0.5
+  scheduler_patience: 5
+  early_stopping_patience: 15
+
+runtime:
+  num_workers: 4
+  device: auto

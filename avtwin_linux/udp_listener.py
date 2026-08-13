@@ -18,11 +18,17 @@ class UdpListener:
         self._stop = threading.Event()
         self._ready = threading.Event()
         self._thread: threading.Thread | None = None
+        self._socket: socket.socket | None = None
+        self._send_lock = threading.Lock()
         self.error: str | None = None
 
     @property
     def raw_lines(self) -> list[str]:
         return list(self._raw_lines)
+
+    @property
+    def is_running(self) -> bool:
+        return self.error is None and self._thread is not None and self._thread.is_alive()
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, name="avtwin-udp", daemon=True)
@@ -35,6 +41,7 @@ class UdpListener:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 sock.bind((self.host, self.port))
                 sock.settimeout(0.2)
+                self._socket = sock
                 self._ready.set()
                 self.notify(f"UDP 正在监听 {self.host}:{self.port}")
                 while not self._stop.is_set():
@@ -53,17 +60,35 @@ class UdpListener:
                         parsed = json.loads(text)
                         if isinstance(parsed, dict):
                             envelope.update(parsed)
+                            if (
+                                parsed.get("protocol") == "AVTWIN_UDP_TEST_V1"
+                                and parsed.get("type") == "udp_test_ping"
+                            ):
+                                reply = {
+                                    "protocol": "AVTWIN_UDP_TEST_V1",
+                                    "type": "udp_test_reply",
+                                    "nonce": parsed.get("nonce"),
+                                    "receiver": "linux",
+                                }
+                                sock.sendto(
+                                    json.dumps(reply, separators=(",", ":")).encode(), source,
+                                )
+                                envelope["automatic_test_reply_sent"] = True
                         else:
                             envelope["parsed"] = parsed
                     except json.JSONDecodeError as exc:
                         envelope["parse_error"] = str(exc)
                     self.messages.append(envelope)
                     self._raw_lines.append(json.dumps(envelope, ensure_ascii=False))
-                    self.notify(f"收到 Android UDP：{envelope.get('status', 'unknown status')}")
+                    label = envelope.get("status") or envelope.get("type") or "unknown"
+                    replied = "；已自动回复" if envelope.get("automatic_test_reply_sent") else ""
+                    self.notify(f"收到 Android UDP：{label} from {source[0]}:{source[1]}{replied}")
         except OSError as exc:
             self.error = str(exc)
             self._ready.set()
             self.notify(f"WARNING: UDP listener 失败：{exc}")
+        finally:
+            self._socket = None
 
     def stop(self) -> None:
         self._stop.set()
@@ -72,8 +97,13 @@ class UdpListener:
 
     def send_json(self, host: str, port: int, message: dict[str, Any]) -> None:
         payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.sendto(payload, (host, port))
+        with self._send_lock:
+            bound_socket = self._socket
+            if bound_socket is not None:
+                bound_socket.sendto(payload, (host, port))
+            else:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    sock.sendto(payload, (host, port))
         self.notify(
             f"已发送 Android UDP {message.get('type', 'message')}："
             f"measurement_id={message.get('measurement_id')} -> {host}:{port}"
@@ -89,6 +119,7 @@ class UdpMeasurementTracker:
         self.outstanding: set[int] = set()
         self.completed: set[int] = set()
         self.accepted: dict[int, list[dict[str, Any]]] = {}
+        self.arm_acks: dict[int, list[dict[str, Any]]] = {}
         self.events: list[dict[str, Any]] = []
         self._seen: set[str] = set()
 
@@ -108,11 +139,33 @@ class UdpMeasurementTracker:
             scope = next(iter(self.outstanding)) if len(self.outstanding) == 1 else "none"
             fingerprint = f"{scope}:{fingerprint}"
         if fingerprint in self._seen:
-            event.update(status="duplicate", confidence="none")
+            event.update(
+                status="duplicate", confidence="none",
+                measurement_id=message.get("measurement_id"),
+            )
             self.events.append(event)
             return event
         self._seen.add(fingerprint)
         message_type = message.get("type")
+        if message_type == "arm_ack":
+            session = message.get("session_id")
+            measurement = message.get("measurement_id")
+            if message.get("protocol_version") != 1:
+                event.update(status="protocol_version_mismatch", confidence="none")
+            elif session != self.session_id:
+                event.update(status="session_mismatch", confidence="none")
+            elif not isinstance(measurement, int) or measurement not in self.outstanding:
+                event.update(status="measurement_id_mismatch", confidence="none")
+            else:
+                accepted = message.get("accepted") is True
+                event.update(
+                    status="arm_ack_accepted" if accepted else "arm_ack_rejected",
+                    measurement_id=measurement, confidence="high",
+                    reason=message.get("reason"),
+                )
+                self.arm_acks.setdefault(measurement, []).append(message)
+            self.events.append(event)
+            return event
         if message_type == "reply_timing" and message.get("protocol_version") != 1:
             event.update(status="protocol_version_mismatch", confidence="none")
             self.events.append(event)
@@ -147,6 +200,12 @@ class UdpMeasurementTracker:
 
     def messages_for(self, measurement_id: int) -> list[dict[str, Any]]:
         return list(self.accepted.get(measurement_id, []))
+
+    def arm_ack_for(self, measurement_id: int, arm_event_id: str) -> dict[str, Any] | None:
+        return next((
+            message for message in reversed(self.arm_acks.get(measurement_id, []))
+            if message.get("arm_event_id") == arm_event_id
+        ), None)
 
     def association_for(self, measurement_id: int) -> dict[str, Any]:
         events = [event for event in self.events if event.get("measurement_id") == measurement_id]

@@ -45,7 +45,7 @@
 cd /home/w/project/odas
 ./install_dependencies.sh
 ./tools/check_audio_device.sh
-./run.sh
+./run_uma8_visualizer.sh
 ```
 
 安装脚本沿用当前 `python3`（包括已激活的 conda 环境），不会删除或重建环境。若系统组件缺失，按提示安装 `python3-tk` 和 `python3-pip`。也可直接运行 `python3 -m uma8_visualizer.main`。
@@ -55,10 +55,10 @@ cd /home/w/project/odas
 常用参数：
 
 ```bash
-./run.sh --angle-offset 9
-./run.sh --input-file logs/tracks_20260804_120000.json --no-launch-odas
-some_json_producer | ./run.sh --no-launch-odas
-./run.sh --activity-threshold 0.08 --smoothing-alpha 0.18
+./run_uma8_visualizer.sh --angle-offset 9
+./run_uma8_visualizer.sh --input-file logs/tracks_20260804_120000.json --no-launch-odas
+some_json_producer | ./run_uma8_visualizer.sh --no-launch-odas
+./run_uma8_visualizer.sh --activity-threshold 0.08 --smoothing-alpha 0.18
 ```
 
 最终显示角为 `(原始角 + angle_offset) % 360`。例如实测正前方为 351°，使用 `--angle-offset 9` 校准到 0°。离线文件到结尾后，界面保留最近源至超时，仍可正常关闭。

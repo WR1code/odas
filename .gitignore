@@ -8,6 +8,11 @@ simulation/output/
 *.pyc
 .venv/
 .deps/
+.runtime/
+.gradle/
+.kotlin/
+*.zip
+*.apk
 rir_capture/output/
 avtwin_linux/output/
 

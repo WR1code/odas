@@ -64,7 +64,7 @@ def _sd():
         import sounddevice as sd
     except (ImportError, OSError) as exc:
         raise RuntimeError(
-            "无法加载 PortAudio/sounddevice；请使用项目的 ./avtwin_linux/run.sh 启动"
+            "无法加载 PortAudio/sounddevice；请使用项目的 ./avtwin_linux/run_acoustic_handshake.sh 启动"
         ) from exc
     return sd
 
@@ -283,7 +283,7 @@ def output_warnings(device: AudioDeviceInfo) -> list[str]:
 
 def check_audio_configuration(
     input_device: AudioDeviceInfo, output_device: AudioDeviceInfo,
-    output_channel: int = 0,
+    output_channel: int | str = 0,
 ) -> tuple[int, int]:
     sd = _sd()
     if input_device.stable_name == output_device.stable_name:
@@ -293,8 +293,12 @@ def check_audio_configuration(
     if input_info.max_input_channels < CHANNELS:
         raise ValueError("所选输入设备不支持 8 通道")
     output_channels = min(2, output_info.max_output_channels)
-    if output_channel < 0 or output_channel >= output_channels:
+    if output_channel != "both" and (
+        not isinstance(output_channel, int) or output_channel < 0 or output_channel >= output_channels
+    ):
         raise ValueError(f"输出声道必须在 0..{output_channels - 1} 内")
+    if output_channel == "both" and output_channels < 2:
+        raise ValueError("BOTH 输出需要双声道输出设备")
     try:
         if input_info.alsa_has_capture and input_info.alsa_stable_hw:
             _check_alsa_input(input_info)
@@ -644,7 +648,7 @@ class ContinuousAudioBackend:
         self,
         input_device: AudioDeviceInfo,
         output_device: AudioDeviceInfo,
-        output_channel: int,
+        output_channel: int | str,
         playback_gain: float,
     ):
         self.input_device = input_device
@@ -670,9 +674,11 @@ class ContinuousAudioBackend:
 
     def play(self, probe: np.ndarray) -> None:
         playback = np.zeros((probe.size, self.output_channels), dtype=np.float32)
-        playback[:, self.output_channel] = np.clip(
-            probe * self.playback_gain, -1.0, 1.0
-        )
+        rendered = np.clip(probe * self.playback_gain, -1.0, 1.0)
+        if self.output_channel == "both":
+            playback[:, :] = rendered[:, None]
+        else:
+            playback[:, int(self.output_channel)] = rendered
         if self._output_session is None:
             raise RuntimeError("持续输出流尚未打开")
         self._output_session.write(playback)
@@ -818,7 +824,7 @@ def capture_handshake(
     *,
     input_device: AudioDeviceInfo,
     output_device: AudioDeviceInfo,
-    output_channel: int,
+    output_channel: int | str,
     playback_gain: float,
     pre_roll: float,
     reply_timeout: float,
@@ -859,7 +865,11 @@ def capture_handshake(
             audio_block(block)
 
     playback = np.zeros((c1.size, output_channels), dtype=np.float32)
-    playback[:, output_channel] = np.clip(c1 * playback_gain, -1.0, 1.0)
+    rendered = np.clip(c1 * playback_gain, -1.0, 1.0)
+    if output_channel == "both":
+        playback[:, :] = rendered[:, None]
+    else:
+        playback[:, int(output_channel)] = rendered
     pre_frames = round(pre_roll * SAMPLE_RATE)
     tail_frames = round(tail * SAMPLE_RATE)
 

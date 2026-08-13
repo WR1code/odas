@@ -1,0 +1,175 @@
+import Foundation
+
+enum JSONWire {
+    static func decode(_ data: Data) -> [String: Any]? {
+        (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    static func encode(_ object: [String: Any]) throws -> Data {
+        try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    }
+
+    static func string(_ object: [String: Any], _ key: String) -> String? {
+        object[key] as? String
+    }
+
+    static func int64(_ object: [String: Any], _ key: String) -> Int64? {
+        if let value = object[key] as? NSNumber { return value.int64Value }
+        return nil
+    }
+
+    static func bool(_ object: [String: Any], _ key: String) -> Bool? {
+        object[key] as? Bool
+    }
+}
+
+struct ArmCommand: Sendable {
+    let protocolVersion: Int
+    let sessionID: String
+    let measurementID: Int64
+    let armEventID: String
+
+    init?(json: [String: Any]) {
+        guard JSONWire.string(json, "type") == "arm",
+              let version = JSONWire.int64(json, "protocol_version"),
+              let sessionID = JSONWire.string(json, "session_id"), !sessionID.isEmpty,
+              let measurementID = JSONWire.int64(json, "measurement_id"),
+              let armEventID = JSONWire.string(json, "arm_event_id"), !armEventID.isEmpty
+        else { return nil }
+        self.protocolVersion = Int(version)
+        self.sessionID = sessionID
+        self.measurementID = measurementID
+        self.armEventID = armEventID
+    }
+}
+
+struct ArmAcceptResult: Sendable {
+    let accepted: Bool
+    let reason: String
+}
+
+struct PairingClaim: Sendable {
+    let sessionID: String
+    let measurementID: Int64
+    let pairingMode: String
+}
+
+final class ArmPairingManager: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending: (command: ArmCommand, receivedMilliseconds: Int64)?
+    private var boundSessionID: String?
+    private var lastClaimedMeasurementID = Int64.min
+    private var acceptedEvents: [String: Int64] = [:]
+    private var acceptedEventOrder: [String] = []
+    private var generationValue: UInt64 = 0
+    private let maxArmAgeMilliseconds: Int64 = 10_000
+
+    func reset() {
+        lock.lock()
+        pending = nil
+        boundSessionID = nil
+        lastClaimedMeasurementID = .min
+        acceptedEvents.removeAll(keepingCapacity: true)
+        acceptedEventOrder.removeAll(keepingCapacity: true)
+        generationValue &+= 1
+        lock.unlock()
+    }
+
+    func accept(_ command: ArmCommand, nowMilliseconds: Int64) -> ArmAcceptResult {
+        lock.lock()
+        defer { lock.unlock() }
+        guard command.protocolVersion == 1 else { return .init(accepted: false, reason: "unsupported_protocol_version") }
+        guard command.measurementID > 0 else { return .init(accepted: false, reason: "invalid_measurement_id") }
+        if let boundSessionID, command.sessionID != boundSessionID {
+            return .init(accepted: false, reason: "session_id_mismatch")
+        }
+        if let measurement = acceptedEvents[command.armEventID] {
+            return .init(
+                accepted: measurement == command.measurementID,
+                reason: measurement == command.measurementID ? "duplicate_arm_reack" : "arm_event_id_reused"
+            )
+        }
+        if command.measurementID <= lastClaimedMeasurementID {
+            return .init(
+                accepted: false,
+                reason: command.measurementID == lastClaimedMeasurementID ? "duplicate_measurement_new_event" : "old_measurement_id"
+            )
+        }
+        if let current = pending?.command, command.measurementID <= current.measurementID {
+            return .init(
+                accepted: false,
+                reason: command.measurementID == current.measurementID ? "duplicate_measurement_new_event" : "older_than_pending_arm"
+            )
+        }
+        if boundSessionID == nil { boundSessionID = command.sessionID }
+        let superseding = pending != nil
+        pending = (command, nowMilliseconds)
+        acceptedEvents[command.armEventID] = command.measurementID
+        acceptedEventOrder.append(command.armEventID)
+        if acceptedEventOrder.count > 256 {
+            acceptedEvents.removeValue(forKey: acceptedEventOrder.removeFirst())
+        }
+        generationValue &+= 1
+        return .init(accepted: true, reason: superseding ? "accepted_superseding_pending_strict" : "accepted_strict")
+    }
+
+    func claimNext(nowMilliseconds: Int64) -> PairingClaim? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let value = pending else { return nil }
+        pending = nil
+        let age = nowMilliseconds - value.receivedMilliseconds
+        guard age >= 0, age <= maxArmAgeMilliseconds else { return nil }
+        lastClaimedMeasurementID = max(lastClaimedMeasurementID, value.command.measurementID)
+        return .init(
+            sessionID: value.command.sessionID,
+            measurementID: value.command.measurementID,
+            pairingMode: "strict_armed"
+        )
+    }
+
+    func clearPending() {
+        lock.lock()
+        pending = nil
+        generationValue &+= 1
+        lock.unlock()
+    }
+
+    func detectorGate() -> (armed: Bool, generation: UInt64) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (pending != nil, generationValue)
+    }
+
+    func pairedSessionID() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return boundSessionID
+    }
+
+    func pendingMeasurementID() -> Int64? {
+        lock.lock()
+        defer { lock.unlock() }
+        return pending?.command.measurementID
+    }
+}
+
+struct ReplyAcknowledgement: Sendable {
+    let sessionID: String
+    let measurementID: Int64
+    let eventID: String
+    let accepted: Bool
+
+    init?(json: [String: Any]) {
+        guard JSONWire.string(json, "type") == "reply_ack",
+              let sessionID = JSONWire.string(json, "session_id"),
+              let measurementID = JSONWire.int64(json, "measurement_id"),
+              let eventID = JSONWire.string(json, "android_event_id"),
+              let accepted = JSONWire.bool(json, "accepted")
+        else { return nil }
+        self.sessionID = sessionID
+        self.measurementID = measurementID
+        self.eventID = eventID
+        self.accepted = accepted
+    }
+}

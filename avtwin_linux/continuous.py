@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import asdict
 from datetime import datetime, timezone
 from enum import Enum
 import hashlib
 from pathlib import Path
+import secrets
 import threading
 import time
 from typing import Any, Callable, Protocol
@@ -20,6 +22,10 @@ from .config import CHANNELS, SAMPLE_RATE, ControllerConfig
 from .detector import analyze_recording
 from .matched_filter import channel_status, detect_multichannel
 from .plotting import write_all_plots
+from .pose import (
+    AudioSampleClock, ManualPoseProvider, NullPoseProvider, PoseProvider, UdpPoseProvider,
+    transform_offset,
+)
 from .quality import assess_quality
 from .result_writer import SessionWriter
 from .rir import estimate_rirs
@@ -30,6 +36,7 @@ from .wav_utils import load_probe, wav_metadata
 class CaptureState(str, Enum):
     IDLE = "IDLE"
     ARMED = "ARMED"
+    WAIT_ARM_ACK = "WAIT_ARM_ACK"
     C1_PLAYING = "C1_PLAYING"
     WAIT_C2 = "WAIT_C2"
     CAPTURE_TAIL = "CAPTURE_TAIL"
@@ -121,6 +128,7 @@ class ContinuousController:
         stop_event: threading.Event | None = None,
         audio_backend: AudioBackend | None = None,
         udp_listener: UdpListener | None = None,
+        pose_provider: PoseProvider | None = None,
         session_id: str | None = None,
     ):
         self.config = config
@@ -131,6 +139,7 @@ class ContinuousController:
         self.stop_event = stop_event or threading.Event()
         self.audio_backend = audio_backend
         self.udp_listener = udp_listener
+        self.pose_provider = pose_provider
         self.session_id = session_id
         self.state = CaptureState.IDLE
         self.pause_event = threading.Event()
@@ -146,6 +155,8 @@ class ContinuousController:
         self.skip_events: list[dict[str, Any]] = []
         self.measurement_id = 0
         self.next_due_sample: int | None = None
+        self._latest_spatial_events: dict[str, Any] = {}
+        self._udp_cursor = 0
 
     def notify(self, message: str) -> None:
         line = f"{datetime.now().isoformat(timespec='milliseconds')} {message}"
@@ -197,6 +208,7 @@ class ContinuousController:
             return
         current = self._ring.end_sample if hasattr(self, "_ring") else 0
         countdown = None if self.next_due_sample is None else max(0.0, (self.next_due_sample - current) / SAMPLE_RATE)
+        latest_pose = None if self.pose_provider is None else self.pose_provider.latest()
         self.status_callback({
             "state": self.state.value,
             "measurement_id": self.measurement_id,
@@ -206,18 +218,60 @@ class ContinuousController:
             "next_trigger_seconds": countdown,
             "paused": self.pause_event.is_set(),
             "latest_quality": self._latest_quality,
+            "radar_pose": None if latest_pose is None else asdict(latest_pose),
+            "speaker_pose": None if latest_pose is None else transform_offset(
+                latest_pose, self.config.speaker_offset_m,
+                child_frame_id="speaker_acoustic_center",
+            ),
+            "microphone_pose": None if latest_pose is None else transform_offset(
+                latest_pose, self.config.microphone_offset_m,
+                child_frame_id="uma8_acoustic_center",
+            ),
+            "latest_spatial_events": self._latest_spatial_events,
         })
 
-    def _ingest_udp(self, tracker: UdpMeasurementTracker, cursor: int) -> int:
+    def _ingest_udp(self, tracker: UdpMeasurementTracker) -> None:
         assert self.udp_listener is not None
         messages = self.udp_listener.messages
-        for message in messages[cursor:]:
+        for message in messages[self._udp_cursor:]:
             event = tracker.ingest(message)
-            if event["status"] != "accepted":
+            if message.get("type") == "reply_timing" and message.get("android_event_id"):
+                accepted = event["status"] in {"accepted", "duplicate"}
+                if self.config.android_host:
+                    try:
+                        self.udp_listener.send_json(
+                            self.config.android_host, self.config.android_port,
+                            {
+                                "type": "reply_ack", "protocol_version": 1,
+                                "session_id": message.get("session_id"),
+                                "measurement_id": message.get("measurement_id"),
+                                "android_event_id": message.get("android_event_id"),
+                                "accepted": accepted,
+                                "reason": "accepted" if accepted else event["status"],
+                                "receiver": "linux",
+                            },
+                        )
+                        self.notify(
+                            f"REPLY_ACK_SENT measurement={message.get('measurement_id')} "
+                            f"event={message.get('android_event_id')} accepted={accepted}"
+                        )
+                    except OSError as exc:
+                        self.notify(f"WARNING: REPLY_ACK 发送失败：{exc}")
+            if event["status"] == "arm_ack_accepted":
+                self.notify(
+                    f"ARM_ACK_ACCEPTED measurement={event.get('measurement_id')} "
+                    f"reason={event.get('reason')}"
+                )
+            elif event["status"] == "arm_ack_rejected":
+                self.notify(
+                    f"ARM_ACK_REJECTED measurement={event.get('measurement_id')} "
+                    f"reason={event.get('reason')}"
+                )
+            elif event["status"] != "accepted":
                 self.notify(f"UDP {event['status']}：measurement_id={message.get('measurement_id')}")
+        self._udp_cursor = len(messages)
         if self._writer:
             self._writer.append_udp(self.udp_listener.raw_lines)
-        return len(messages)
 
     def _trigger(self, c1: np.ndarray, tracker: UdpMeasurementTracker) -> dict[str, Any]:
         self.measurement_id += 1
@@ -230,6 +284,10 @@ class ContinuousController:
             "tail_end_sample": None,
             "arm_sent": False,
             "arm_error": None,
+            "arm_event_id": None,
+            "arm_attempts": 0,
+            "arm_ack": None,
+            "abort_reason": None,
         }
         tracker.register(self.measurement_id)
         if self.config.capture_mode == "timed_continuous":
@@ -238,17 +296,56 @@ class ContinuousController:
             # the just-triggered cycle as an overlap.
             self.next_due_sample = None
         if self.config.android_host:
-            try:
-                self.udp_listener.send_json(self.config.android_host, self.config.android_port, {
-                    "type": "arm", "protocol_version": 1,
-                    "session_id": self.session_id, "measurement_id": self.measurement_id,
-                })
-                measurement["arm_sent"] = True
-            except OSError as exc:
-                measurement["arm_error"] = str(exc)
-                self.notify(f"WARNING: ARM 发送失败，继续录音并等待 reply_timing：{exc}")
+            arm_event_id = secrets.token_hex(12)
+            measurement["arm_event_id"] = arm_event_id
+            arm = {
+                "type": "arm", "protocol_version": 1,
+                "session_id": self.session_id, "measurement_id": self.measurement_id,
+                "arm_event_id": arm_event_id,
+            }
+            self._set_state(CaptureState.WAIT_ARM_ACK)
+            for attempt in range(1, self.config.udp_ack_retries + 1):
+                if self.stop_event.is_set():
+                    measurement["abort_reason"] = "session stopped while waiting for ARM_ACK"
+                    return measurement
+                measurement["arm_attempts"] = attempt
+                try:
+                    self.udp_listener.send_json(
+                        self.config.android_host, self.config.android_port, arm,
+                    )
+                    measurement["arm_sent"] = True
+                    self.notify(
+                        f"ARM_SENT measurement={self.measurement_id} attempt="
+                        f"{attempt}/{self.config.udp_ack_retries} event={arm_event_id}"
+                    )
+                except OSError as exc:
+                    measurement["arm_error"] = str(exc)
+                    self.notify(f"WARNING: ARM 第 {attempt} 次发送失败：{exc}")
+                deadline = time.monotonic() + self.config.arm_ack_timeout
+                while time.monotonic() < deadline and not self.stop_event.is_set():
+                    self._ingest_udp(tracker)
+                    ack = tracker.arm_ack_for(self.measurement_id, arm_event_id)
+                    if ack is not None:
+                        measurement["arm_ack"] = ack
+                        if ack.get("accepted") is True:
+                            break
+                        measurement["abort_reason"] = (
+                            f"ARM rejected by Android: {ack.get('reason', 'unknown')}"
+                        )
+                        return measurement
+                    self._progress.wait(0.01)
+                    self._progress.clear()
+                if measurement["arm_ack"] is not None:
+                    break
+            if measurement["arm_ack"] is None:
+                measurement["abort_reason"] = (
+                    f"ARM_ACK timeout after {self.config.udp_ack_retries} attempts"
+                )
+                self.notify(f"ARM_ACK_TIMEOUT measurement={self.measurement_id}")
+                return measurement
         else:
             self.notify("ARM 未发送：未配置 Android host；启用单 outstanding 兼容关联")
+        measurement["playback_issue_sample"] = self._ring.end_sample
         self._set_state(CaptureState.C1_PLAYING)
         assert self.audio_backend is not None
         self.audio_backend.play(c1)
@@ -326,6 +423,40 @@ class ContinuousController:
         analysis["c2_detection"] = _shift_detection(analysis["c2_detection"], start)
         t1 = analysis["c1_detection"]["system_sample"]
         t4 = analysis["c2_detection"]["system_sample"]
+        spatial_events: dict[str, Any] = {}
+        for name, sample in (("t1", t1), ("t4", t4)):
+            if sample is None:
+                spatial_events[name] = {"available": False, "reason": "acoustic event was not detected"}
+                continue
+            timestamp_ns, clock_info = self._audio_clock.timestamp(int(sample))
+            spatial: dict[str, Any] = {
+                "available": False, "audio_sample": int(sample),
+                "audio_time_monotonic_ns": timestamp_ns,
+                "audio_clock_mapping": clock_info,
+            }
+            if timestamp_ns is None:
+                spatial["reason"] = clock_info["reason"]
+            else:
+                assert self.pose_provider is not None
+                radar_pose, lookup = self.pose_provider.pose_at(timestamp_ns)
+                spatial["pose_lookup"] = lookup
+                if radar_pose is None:
+                    spatial["reason"] = lookup["reason"]
+                else:
+                    spatial.update({
+                        "available": True,
+                        "radar_pose": asdict(radar_pose),
+                        "speaker_pose": transform_offset(
+                            radar_pose, self.config.speaker_offset_m,
+                            child_frame_id="speaker_acoustic_center",
+                        ),
+                        "microphone_pose": transform_offset(
+                            radar_pose, self.config.microphone_offset_m,
+                            child_frame_id="uma8_acoustic_center",
+                        ),
+                    })
+            spatial_events[name] = spatial
+        self._latest_spatial_events = spatial_events
         relative_t4 = None if t4 is None else int(t4) - start
         rirs, rir_info = estimate_rirs(
             recording, c2, relative_t4, analysis["channel_status"],
@@ -374,13 +505,21 @@ class ContinuousController:
                 "t3_precise": precise is not None,
                 "arm_sent": current["arm_sent"],
                 "arm_error": current["arm_error"],
+                "arm_event_id": current.get("arm_event_id"),
+                "arm_attempts": current.get("arm_attempts", 0),
+                "arm_ack": current.get("arm_ack"),
             },
             "rir": rir_info,
             "quality": quality,
             "failure_reasons": failure_reasons,
             "capture": {"window_start_sample": start, "window_end_sample": end, "frames": recording.shape[0]},
-            "tx_pose": None,
-            "rx_pose": None,
+            "tx_pose": spatial_events["t1"].get("speaker_pose"),
+            "rx_pose": spatial_events["t4"].get("microphone_pose"),
+            "local_spatial_events": spatial_events,
+            "pose_extrinsics": {
+                "speaker_offset_m": list(self.config.speaker_offset_m),
+                "microphone_offset_m": list(self.config.microphone_offset_m),
+            },
         }
         assert self._writer is not None
         measurement_dir = self._writer.write_measurement(self.measurement_id, result, rirs)
@@ -431,9 +570,19 @@ class ContinuousController:
             self._writer.append_log(existing)
         self._log_lines.clear()
         self.udp_listener = self.udp_listener or UdpListener(cfg.udp_host, cfg.udp_port, self.notify)
+        if self.pose_provider is None:
+            if cfg.pose_source == "udp":
+                self.pose_provider = UdpPoseProvider(
+                    cfg.pose_udp_host, cfg.pose_udp_port, cfg.pose_max_age,
+                )
+            elif cfg.pose_source == "manual":
+                self.pose_provider = ManualPoseProvider(cfg.manual_position_m)
+            else:
+                self.pose_provider = NullPoseProvider()
         tracker = UdpMeasurementTracker(self.session_id, compatibility_mode=cfg.udp_compatibility_mode)
         capacity_s = max(30.0, cfg.reply_timeout + cfg.tail + cfg.rir_duration + 2.0)
         self._ring = PcmRingBuffer(round(capacity_s * SAMPLE_RATE))
+        self._audio_clock = AudioSampleClock(SAMPLE_RATE)
         start_timestamp = datetime.now(timezone.utc).isoformat()
         summary: dict[str, Any] = {
             "session_id": self.session_id,
@@ -452,11 +601,14 @@ class ContinuousController:
             "success_count": 0, "failure_count": 0, "skipped_count": 0,
             "interrupted": True,
             "probe_warnings": c1_warnings + c2_warnings,
+            "pose_extrinsics": {
+                "speaker_offset_m": list(cfg.speaker_offset_m),
+                "microphone_offset_m": list(cfg.microphone_offset_m),
+            },
         }
         self._writer.update_session(summary)
         for warning in output_warnings(output_info):
             self.notify(warning)
-        udp_cursor = 0
         current: dict[str, Any] | None = None
         interval_frames = round(cfg.interval * SAMPLE_RATE)
         session_started_monotonic = time.monotonic()
@@ -467,13 +619,15 @@ class ContinuousController:
             if warning:
                 self.notify(f"WARNING: input stream: {warning}")
             values = np.ascontiguousarray(block, dtype=np.float32)
-            self._ring.append(values)
+            _start, end = self._ring.append(values)
+            self._audio_clock.add_anchor(end)
             assert self._writer is not None
             self._writer.raw.write(values)
             if self.audio_block:
                 self.audio_block(values)
             self._progress.set()
 
+        self.pose_provider.start()
         self.udp_listener.start()
         try:
             with self.audio_backend.capture(accept) as input_session:
@@ -482,7 +636,7 @@ class ContinuousController:
                     self.next_due_sample = self._ring.end_sample + round(cfg.startup_countdown * SAMPLE_RATE)
                     self.notify(f"自动采集将在 {cfg.startup_countdown:.1f} 秒倒计时后开始")
                 while True:
-                    udp_cursor = self._ingest_udp(tracker, udp_cursor)
+                    self._ingest_udp(tracker)
                     end = self._ring.end_sample
                     if getattr(input_session, "finished", threading.Event()).is_set():
                         errors = getattr(input_session, "errors", [])
@@ -533,6 +687,15 @@ class ContinuousController:
                             trigger = True
                         if trigger:
                             current = self._trigger(c1, tracker)
+                            if current.get("abort_reason"):
+                                self._finalize(
+                                    current, c1, c2, tracker,
+                                    forced_reason=str(current["abort_reason"]),
+                                )
+                                current = None
+                                if cfg.capture_mode == "timed_continuous":
+                                    self.next_due_sample = self._ring.end_sample + interval_frames
+                                self._set_state(CaptureState.ARMED)
 
                     if current is not None and self.state == CaptureState.WAIT_C2:
                         self._live_detect(current, c1, c2)
@@ -578,9 +741,10 @@ class ContinuousController:
             raise
         finally:
             # Drain datagrams already delivered before the socket closes.
-            udp_cursor = self._ingest_udp(tracker, udp_cursor)
+            self._ingest_udp(tracker)
             self.udp_listener.stop()
-            udp_cursor = self._ingest_udp(tracker, udp_cursor)
+            self._ingest_udp(tracker)
+            self.pose_provider.stop()
             self._set_state(CaptureState.IDLE)
             summary.update({
                 "end_timestamp": datetime.now(timezone.utc).isoformat(),
@@ -592,6 +756,7 @@ class ContinuousController:
                 "termination_reason": termination_reason,
                 "last_state_before_stop": state_before_stop,
                 "udp_listener_error": self.udp_listener.error,
+                "pose_interface": self.pose_provider.metadata(),
             })
             self._writer.update_session(summary)
             self._writer.close()

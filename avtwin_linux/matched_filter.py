@@ -14,6 +14,9 @@ class Peak:
     sample: int | None
     score: float
     passed: bool
+    global_max_sample: int | None = None
+    global_max_score: float = 0.0
+    candidate_samples: tuple[int, ...] = ()
 
 
 def template_passband(template: np.ndarray, sample_rate: int = SAMPLE_RATE) -> tuple[float, float] | None:
@@ -85,9 +88,26 @@ def find_peak(
     scores = normalized_correlation(x[start : stop + template.size - 1], template)
     if not scores.size:
         return Peak(None, 0.0, False)
-    local = int(np.argmax(scores))
-    score = float(scores[local])
-    return Peak(start + local, score, score >= threshold)
+    global_local = int(np.argmax(scores))
+    global_score = float(scores[global_local])
+    # Direct path is the earliest credible sharp correlation peak, which can
+    # precede a stronger reflection. Keep the global maximum separately for
+    # diagnostics instead of silently treating it as line of sight.
+    candidates, properties = signal.find_peaks(
+        scores, height=threshold,
+        prominence=max(0.025, threshold * 0.10),
+        distance=max(1, round(0.00025 * SAMPLE_RATE)),
+    )
+    if not candidates.size:
+        return Peak(
+            None, global_score, False, start + global_local, global_score, (),
+        )
+    first = int(candidates[0])
+    return Peak(
+        start + first, float(scores[first]), True,
+        start + global_local, global_score,
+        tuple(start + int(value) for value in candidates[:32]),
+    )
 
 
 def channel_status(recording: np.ndarray) -> dict[str, str]:
@@ -113,6 +133,7 @@ def detect_multichannel(
     )
     channels: dict[str, Any] = {}
     accepted: list[int] = []
+    global_maxima: list[int] = []
     for channel in range(recording.shape[1]):
         if statuses[str(channel)] != "active":
             peak = Peak(None, 0.0, False)
@@ -124,11 +145,19 @@ def detect_multichannel(
         channels[str(channel)] = asdict(peak)
         if peak.passed and peak.sample is not None:
             accepted.append(peak.sample)
+        if peak.global_max_sample is not None and statuses[str(channel)] == "active":
+            global_maxima.append(peak.global_max_sample)
     system_sample = int(np.median(accepted)) if accepted else None
     spread = max(accepted) - min(accepted) if accepted else None
     max_spread = round(max_spread_ms * SAMPLE_RATE / 1000.0)
     return {
         "system_sample": system_sample,
+        "first_valid_peak": system_sample,
+        "global_max_sample": int(np.median(global_maxima)) if global_maxima else None,
+        "global_max_score": float(np.median([
+            channels[str(c)]["global_max_score"] for c in range(recording.shape[1])
+            if statuses[str(c)] == "active"
+        ])) if global_maxima else 0.0,
         "system_time_ms": None if system_sample is None else system_sample * 1000.0 / SAMPLE_RATE,
         "system_score": float(np.median([
             channels[str(c)]["score"] for c in range(recording.shape[1])

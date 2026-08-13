@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# UMA-8 / ODAS direction-of-arrival visualizer entry point.
 set -euo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

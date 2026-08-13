@@ -98,6 +98,34 @@ class SimulatedAudio:
                 self.events.append((acoustic_c1 + self.c1.size + 900, self.c2, 0.75))
 
 
+class AckingUdp:
+    def __init__(self, *, accepted: bool = True):
+        self.accepted = accepted
+        self.messages: list[dict] = []
+        self.raw_lines: list[str] = []
+        self.sent_messages: list[dict] = []
+        self.error = None
+
+    def start(self): pass
+    def stop(self): pass
+
+    def send_json(self, _host: str, _port: int, message: dict) -> None:
+        self.sent_messages.append(message)
+        if message.get("type") == "arm" and not any(
+            item.get("arm_event_id") == message["arm_event_id"] for item in self.messages
+        ):
+            ack = {
+                "type": "arm_ack", "protocol_version": 1,
+                "session_id": message["session_id"],
+                "measurement_id": message["measurement_id"],
+                "arm_event_id": message["arm_event_id"],
+                "accepted": self.accepted,
+                "reason": "accepted_strict" if self.accepted else "source_rejected",
+            }
+            self.messages.append(ack)
+            self.raw_lines.append(json.dumps(ack))
+
+
 def config(tmp_path: Path, mode: str, *, max_measurements: int = 3, interval: float = 0.08):
     c1_path, c2_path = tmp_path / "c1.wav", tmp_path / "c2.wav"
     c1 = make_probe(c1_path, 9_000, 14_000)
@@ -169,6 +197,36 @@ def test_c2_timeout_returns_to_armed_for_next_round(monkeypatch, tmp_path) -> No
     assert all("C2 timeout" in item for item in reasons)
 
 
+def test_c1_is_played_only_after_correlated_arm_ack(monkeypatch, tmp_path) -> None:
+    patch_hardware(monkeypatch)
+    cfg, c1, c2 = config(tmp_path, "timed_continuous", max_measurements=1)
+    cfg.android_host = "192.0.2.10"
+    backend = SimulatedAudio(c1, c2)
+    udp = AckingUdp(accepted=True)
+    directory, _summary = continuous.ContinuousController(
+        cfg, audio_backend=backend, udp_listener=udp,
+    ).run()
+    result = json.loads(next(directory.glob("measurements/*/result.json")).read_text())
+    assert len(backend.play_samples) == 1
+    assert result["android"]["arm_ack"]["accepted"] is True
+    assert result["android"]["arm_attempts"] == 1
+
+
+def test_rejected_arm_fails_early_without_playing_c1(monkeypatch, tmp_path) -> None:
+    patch_hardware(monkeypatch)
+    cfg, c1, c2 = config(tmp_path, "timed_continuous", max_measurements=1)
+    cfg.android_host = "192.0.2.10"
+    backend = SimulatedAudio(c1, c2)
+    udp = AckingUdp(accepted=False)
+    directory, summary = continuous.ContinuousController(
+        cfg, audio_backend=backend, udp_listener=udp,
+    ).run()
+    result = json.loads(next(directory.glob("measurements/*/result.json")).read_text())
+    assert backend.play_samples == []
+    assert summary["failure_count"] == 1
+    assert "ARM rejected by Android: source_rejected" in result["failure_reasons"]
+
+
 def test_pause_resume_and_safe_stop(monkeypatch, tmp_path) -> None:
     patch_hardware(monkeypatch)
     cfg, c1, c2 = config(tmp_path, "timed_continuous", max_measurements=0, interval=0.08)
@@ -220,6 +278,41 @@ def test_udp_duplicate_late_out_of_order_and_mismatch() -> None:
     assert tracker.ingest(late)["status"] == "late"
     tracker.register(2)
     assert tracker.messages_for(2) == []
+
+
+def test_arm_ack_is_correlated_by_session_measurement_and_event() -> None:
+    tracker = UdpMeasurementTracker("session-A")
+    tracker.register(7)
+    ack = {
+        "type": "arm_ack", "protocol_version": 1,
+        "session_id": "session-A", "measurement_id": 7,
+        "arm_event_id": "arm-event-7", "accepted": True,
+        "reason": "accepted_strict",
+    }
+    event = tracker.ingest(ack)
+    assert event["status"] == "arm_ack_accepted"
+    assert tracker.arm_ack_for(7, "wrong-event") is None
+    assert tracker.arm_ack_for(7, "arm-event-7") == ack
+
+
+def test_reply_timing_is_acknowledged_to_android_control_port(tmp_path) -> None:
+    cfg, _c1, _c2 = config(tmp_path, "manual_continuous")
+    cfg.android_host = "192.0.2.10"
+    cfg.android_port = 7001
+    udp = AckingUdp()
+    udp.messages.append({
+        "type": "reply_timing", "protocol_version": 1,
+        "session_id": "session-A", "measurement_id": 3,
+        "android_event_id": "reply-event-3", "t3_precise": False,
+    })
+    tracker = UdpMeasurementTracker("session-A")
+    tracker.register(3)
+    controller = continuous.ContinuousController(cfg, udp_listener=udp, session_id="session-A")
+    controller._ingest_udp(tracker)
+    ack = udp.sent_messages[-1]
+    assert ack["type"] == "reply_ack"
+    assert ack["android_event_id"] == "reply-event-3"
+    assert ack["accepted"] is True
 
 
 def test_float32_rir_tail_survives_roundtrip(tmp_path) -> None:

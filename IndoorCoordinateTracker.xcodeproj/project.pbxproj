@@ -22,6 +22,7 @@
 		A1000000000000000000000E /* LocalNetworkInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* LocalNetworkInfo.swift */; };
 		A1000000000000000000000F /* CryptoKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* CryptoKit.framework */; };
 		A10000000000000000000010 /* UniformTypeIdentifiers.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* UniformTypeIdentifiers.framework */; };
+		A10000000000000000000011 /* LocalC2AcousticDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* LocalC2AcousticDetector.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -43,6 +44,7 @@
 		A20000000000000000000010 /* LocalNetworkInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalNetworkInfo.swift; sourceTree = "<group>"; };
 		A20000000000000000000011 /* CryptoKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CryptoKit.framework; path = System/Library/Frameworks/CryptoKit.framework; sourceTree = SDKROOT; };
 		A20000000000000000000012 /* UniformTypeIdentifiers.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UniformTypeIdentifiers.framework; path = System/Library/Frameworks/UniformTypeIdentifiers.framework; sourceTree = SDKROOT; };
+		A20000000000000000000013 /* LocalC2AcousticDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalC2AcousticDetector.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -84,6 +86,7 @@
 				A2000000000000000000000E /* ProbeSignal.swift */,
 				A2000000000000000000000F /* SessionStorage.swift */,
 				A20000000000000000000010 /* LocalNetworkInfo.swift */,
+				A20000000000000000000013 /* LocalC2AcousticDetector.swift */,
 				A20000000000000000000009 /* Info.plist */,
 			);
 			path = IndoorCoordinateTracker;
@@ -174,6 +177,7 @@
 				A1000000000000000000000C /* ProbeSignal.swift in Sources */,
 				A1000000000000000000000D /* SessionStorage.swift in Sources */,
 				A1000000000000000000000E /* LocalNetworkInfo.swift in Sources */,
+				A10000000000000000000011 /* LocalC2AcousticDetector.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -224,7 +228,7 @@
 				INFOPLIST_FILE = IndoorCoordinateTracker/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks");
-				MARKETING_VERSION = 0.9.0;
+				MARKETING_VERSION = 0.13.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.AVTwinIOSResponder;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -245,7 +249,7 @@
 				INFOPLIST_FILE = IndoorCoordinateTracker/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks");
-				MARKETING_VERSION = 0.9.0;
+				MARKETING_VERSION = 0.13.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.AVTwinIOSResponder;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";

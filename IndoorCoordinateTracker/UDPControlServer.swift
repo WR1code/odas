@@ -4,11 +4,17 @@ import Foundation
 final class UDPControlServer: @unchecked Sendable {
     typealias ArmHandler = @Sendable (ArmCommand, String) -> ArmAcceptResult
     typealias ReplyAckHandler = @Sendable (ReplyAcknowledgement, String) -> Void
+    typealias CaptureStartHandler = @Sendable (CaptureStartCommand, String) -> CaptureCommandResult
+    typealias CaptureStopHandler = @Sendable (CaptureStopCommand, String) -> CaptureCommandResult
+    typealias CaptureOnceAckHandler = @Sendable (CaptureOnceAcknowledgement, String) -> Void
 
     private let port: UInt16
     private let allowedHost: String
     private let onArm: ArmHandler
     private let onReplyAck: ReplyAckHandler
+    private let onCaptureStart: CaptureStartHandler
+    private let onCaptureStop: CaptureStopHandler
+    private let onCaptureOnceAck: CaptureOnceAckHandler
     private let onLog: @Sendable (String) -> Void
     private let queue = DispatchQueue(label: "com.avtwin.ios.udp-control", qos: .userInitiated)
     private let stateLock = NSLock()
@@ -20,12 +26,18 @@ final class UDPControlServer: @unchecked Sendable {
         allowedHost: String,
         onArm: @escaping ArmHandler,
         onReplyAck: @escaping ReplyAckHandler,
+        onCaptureStart: @escaping CaptureStartHandler,
+        onCaptureStop: @escaping CaptureStopHandler,
+        onCaptureOnceAck: @escaping CaptureOnceAckHandler,
         onLog: @escaping @Sendable (String) -> Void
     ) {
         self.port = port
         self.allowedHost = allowedHost
         self.onArm = onArm
         self.onReplyAck = onReplyAck
+        self.onCaptureStart = onCaptureStart
+        self.onCaptureStop = onCaptureStop
+        self.onCaptureOnceAck = onCaptureOnceAck
         self.onLog = onLog
     }
 
@@ -132,6 +144,36 @@ final class UDPControlServer: @unchecked Sendable {
             }
             if let acknowledgement = ReplyAcknowledgement(json: json) {
                 onReplyAck(acknowledgement, source)
+                continue
+            }
+            if let acknowledgement = CaptureOnceAcknowledgement(json: json) {
+                onCaptureOnceAck(acknowledgement, source)
+                continue
+            }
+            if let command = CaptureStopCommand(json: json) {
+                let result = onCaptureStop(command, source)
+                let acknowledgement: [String: Any] = [
+                    "type": "capture_stop_ack", "protocol_version": 1,
+                    "command_id": command.commandID, "accepted": result.accepted,
+                    "state": result.state, "reason": result.reason, "receiver": "ios"
+                ]
+                if let data = try? JSONWire.encode(acknowledgement) {
+                    Self.send(data, descriptor: socketDescriptor, to: &sourceAddress, length: sourceLength)
+                }
+                onLog("CAPTURE_STOP_ACK_SENT command=\(command.commandID) accepted=\(result.accepted) state=\(result.state)")
+                continue
+            }
+            if let command = CaptureStartCommand(json: json) {
+                let result = onCaptureStart(command, source)
+                let acknowledgement: [String: Any] = [
+                    "type": "start_capture_ack", "protocol_version": 1,
+                    "command_id": command.commandID, "accepted": result.accepted,
+                    "state": result.state, "reason": result.reason, "receiver": "ios"
+                ]
+                if let data = try? JSONWire.encode(acknowledgement) {
+                    Self.send(data, descriptor: socketDescriptor, to: &sourceAddress, length: sourceLength)
+                }
+                onLog("START_CAPTURE_ACK_SENT command=\(command.commandID) accepted=\(result.accepted) state=\(result.state)")
                 continue
             }
             if let command = ArmCommand(json: json) {

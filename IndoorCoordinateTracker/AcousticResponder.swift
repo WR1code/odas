@@ -12,6 +12,7 @@ struct ResponderConfiguration: Sendable {
     let saveDebugAudio: Bool
     let c1: ProbeDefinition
     let c2: ProbeDefinition
+    var startupCommandID: String? = nil
 }
 
 final class AcousticResponder: ObservableObject, @unchecked Sendable {
@@ -36,6 +37,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     @Published private(set) var sessionLogPath = ""
     @Published private(set) var sessionShareURL: URL?
     @Published private(set) var c2TestProgress = ""
+    @Published private(set) var captureRequestStatus = "尚未请求"
 
     private struct CaptureAnchor { let sample: Int64; let hostTime: UInt64 }
     private let poseSnapshot: @Sendable () -> DevicePose
@@ -45,6 +47,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     private let analysisQueue = DispatchQueue(label: "com.avtwin.ios.audio-analysis", qos: .userInteractive)
     private let responseQueue = DispatchQueue(label: "com.avtwin.ios.audio-response", qos: .userInteractive)
     private var configuration: ResponderConfiguration?
+    private var preparedConfiguration: ResponderConfiguration?
     private var controlServer: UDPControlServer?
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
@@ -59,6 +62,9 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     private var armedAtSample: Int64 = 0
     private var latestAnchor: CaptureAnchor?
     private var pendingReply: (session: String, measurement: Int64, event: String, semaphore: DispatchSemaphore)?
+    private var pendingCaptureRequestID: String?
+    private var pendingStartupCommandID: String?
+    private var remoteStopPending = false
     private var routeGeneration: UInt64 = 0
     private var audioInterrupted = false
     private var successCount = 0, rejectedCount = 0, c2FailureCount = 0, udpFailureCount = 0
@@ -67,8 +73,36 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     private var lastPoseValue: DevicePose?
     private var testRunningValue = false
     private var debugCapture: (measurement: Int64, samples: [Float], targetCount: Int)?
+    private var idleListenerEnabled = true
 
     init(poseSnapshot: @escaping @Sendable () -> DevicePose) { self.poseSnapshot = poseSnapshot }
+
+    func configureIdle(_ config: ResponderConfiguration) {
+        idleListenerEnabled = true
+        preparedConfiguration = config
+        stateLock.lock(); let running = runningValue; stateLock.unlock()
+        guard !running else { return }
+        controlServer?.stop()
+        controlServer = nil
+        startControlServer(config, idle: true)
+        DispatchQueue.main.async { self.status = "空闲控制端口监听中，可由 Linux 远程启动" }
+    }
+
+    func clearIdleConfiguration() {
+        preparedConfiguration = nil
+        stateLock.lock(); let running = runningValue; stateLock.unlock()
+        guard !running else { return }
+        controlServer?.stop()
+        controlServer = nil
+    }
+
+    func shutdown() {
+        idleListenerEnabled = false
+        stateLock.lock(); let running = runningValue; stateLock.unlock()
+        if running { stop() }
+        controlServer?.stop()
+        controlServer = nil
+    }
 
     func start(_ requested: ResponderConfiguration) {
         stateLock.lock(); let testIsRunning = testRunningValue; stateLock.unlock()
@@ -78,12 +112,67 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         let config = ResponderConfiguration(
             linuxHost: host, controlPort: requested.controlPort, resultPort: requested.resultPort,
             resultRootURL: requested.resultRootURL, saveDebugAudio: requested.saveDebugAudio,
-            c1: requested.c1, c2: requested.c2
+            c1: requested.c1, c2: requested.c2, startupCommandID: requested.startupCommandID
         )
+        preparedConfiguration = config
+        controlServer?.stop()
+        controlServer = nil
         AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
             guard let self else { return }
-            guard granted else { self.publishStatus("麦克风权限被拒绝，请到系统设置中允许"); return }
+            guard granted else {
+                self.stateLock.lock(); self.pendingStartupCommandID = nil; self.stateLock.unlock()
+                self.publishStatus("麦克风权限被拒绝，请到系统设置中允许")
+                self.notifyStartupFailure(config, reason: "record_audio_permission_missing")
+                DispatchQueue.main.async { self.configureIdle(config) }
+                return
+            }
             DispatchQueue.main.async { self.startAfterPermission(config) }
+        }
+    }
+
+    func requestCaptureOnce() {
+        guard let config = configuration else {
+            publishCaptureRequestStatus("请先启动会话")
+            return
+        }
+        stateLock.lock(); let canRequest = runningValue && !pausedValue; stateLock.unlock()
+        guard canRequest else {
+            publishCaptureRequestStatus("当前会话未运行或已暂停")
+            return
+        }
+        let requestID = UUID().uuidString
+        let request: [String: Any] = [
+            "type": "capture_once_request", "protocol_version": 1,
+            "request_id": requestID, "sender": "ios",
+            "ios_control_port": Int(config.controlPort)
+        ]
+        stateLock.lock(); pendingCaptureRequestID = requestID; stateLock.unlock()
+        publishCaptureRequestStatus("已发送单次采集请求，等待 Linux ACK")
+        storage?.appendEvent(request)
+        DispatchQueue.global(qos: .userInitiated).async {
+            var anySendSucceeded = false
+            for attempt in 1...3 {
+                self.stateLock.lock(); let stillPending = self.pendingCaptureRequestID == requestID; self.stateLock.unlock()
+                guard stillPending else { return }
+                do {
+                    _ = try UDPControlServer.sendJSON(request, host: config.linuxHost, port: config.resultPort)
+                    anySendSucceeded = true
+                    self.appendLog("CAPTURE_ONCE_REQUEST_SENT request=\(requestID) attempt=\(attempt)/3")
+                } catch {
+                    self.appendLog("CAPTURE_ONCE_REQUEST_FAILED request=\(requestID) attempt=\(attempt)/3 error=\(error.localizedDescription)")
+                }
+                if attempt < 3 { Thread.sleep(forTimeInterval: 0.15) }
+            }
+            let didSend = anySendSucceeded
+            DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(900)) {
+                self.stateLock.lock()
+                let timedOut = self.pendingCaptureRequestID == requestID
+                if timedOut { self.pendingCaptureRequestID = nil }
+                self.stateLock.unlock()
+                if timedOut {
+                    self.publishCaptureRequestStatus(didSend ? "Linux ACK 超时，请检查会话状态" : "单次采集请求发送失败")
+                }
+            }
         }
     }
 
@@ -126,7 +215,8 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         stateLock.lock()
         let wasActive = runningValue
         runningValue = false; listening = false; pausedValue = false
-        pendingReply?.semaphore.signal(); pendingReply = nil
+        pendingReply?.semaphore.signal(); pendingReply = nil; pendingCaptureRequestID = nil; pendingStartupCommandID = nil
+        remoteStopPending = false
         stateLock.unlock()
         controlServer?.stop(); controlServer = nil
         cleanupAudio()
@@ -135,10 +225,12 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         appendLog("SESSION_STOPPED")
         updateSessionFile(status: "stopped")
         storage?.close()
+        storage = nil
         DispatchQueue.main.async {
             UIApplication.shared.isIdleTimerDisabled = false
             self.isRunning = false; self.isPaused = false; self.stateName = "STOPPED"
             self.status = wasActive ? "已安全停止，日志已保存" : self.status
+            if self.idleListenerEnabled, let config = self.preparedConfiguration { self.configureIdle(config) }
         }
     }
 
@@ -151,12 +243,19 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         }
     }
 
-    func testC2Repeated(_ probe: ProbeDefinition) {
+    func clearVisibleLog() {
+        DispatchQueue.main.async { self.logText = "" }
+    }
+
+    func testC2Once(_ probe: ProbeDefinition) { testC2(probe, repetitions: 1) }
+    func testC2Repeated(_ probe: ProbeDefinition) { testC2(probe, repetitions: 20) }
+
+    private func testC2(_ probe: ProbeDefinition, repetitions: Int) {
         stateLock.lock()
         guard !runningValue, !testRunningValue else { stateLock.unlock(); return }
         testRunningValue = true
         stateLock.unlock()
-        DispatchQueue.main.async { self.isTestingC2 = true; self.c2TestProgress = "正在准备 C2 ×20…" }
+        DispatchQueue.main.async { self.isTestingC2 = true; self.c2TestProgress = "正在准备 C2 ×\(repetitions)…" }
         responseQueue.async {
             var passed = 0
             do {
@@ -170,7 +269,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
                 engine.connect(player, to: engine.mainMixerNode, format: format)
                 let buffer = try Self.audioBuffer(probe.samples, format: format)
                 engine.prepare(); try engine.start()
-                for index in 1...20 {
+                for index in 1...repetitions {
                     let completion = DispatchSemaphore(value: 0)
                     player.stop()
                     player.scheduleBuffer(buffer, at: nil, options: .interrupts, completionCallbackType: .dataPlayedBack) { completion.signal() }
@@ -178,7 +277,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
                     let verified = completion.wait(timeout: .now() + .milliseconds(Int(probe.durationMilliseconds + 500))) == .success
                     if verified { passed += 1 }
                     DispatchQueue.main.async {
-                        self.c2TestProgress += "\n[\(index)/20] \(verified ? "PASS" : "FAIL") dataPlayedBack=\(verified)"
+                        self.c2TestProgress += "\n[\(index)/\(repetitions)] \(verified ? "PASS" : "FAIL") dataPlayedBack=\(verified)"
                     }
                 }
                 player.stop(); engine.stop(); try? session.setActive(false, options: .notifyOthersOnDeactivation)
@@ -186,7 +285,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
                 DispatchQueue.main.async { self.c2TestProgress += "\nERROR: \(error.localizedDescription)" }
             }
             DispatchQueue.main.async {
-                self.c2TestProgress += "\nRESULT: \(passed)/20 hardware-render callbacks"
+                self.c2TestProgress += "\nRESULT: \(passed)/\(repetitions) hardware-render callbacks"
                 self.isTestingC2 = false
             }
             self.stateLock.lock(); self.testRunningValue = false; self.stateLock.unlock()
@@ -200,7 +299,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         cooldownUntilSample = 0; armedAtSample = 0; latestAnchor = nil; routeGeneration = 0
         audioInterrupted = false; successCount = 0; rejectedCount = 0; c2FailureCount = 0; udpFailureCount = 0
         replyDelayValue = nil; t3PreciseValue = false
-        lastPoseValue = nil
+        lastPoseValue = nil; pendingCaptureRequestID = nil; pendingStartupCommandID = nil; remoteStopPending = false
         stateLock.unlock()
         configuration = config
         pairing.reset()
@@ -217,7 +316,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             storage.appendEvent(["type": "session_started", "local_session_id": sessionID, "receiver": "ios", "sample_rate": Int(ProbeDefaults.sampleRate)])
             try prepareAudio(c2: config.c2)
             installAudioNotifications()
-            startControlServer(config)
+            startControlServer(config, idle: false)
             UIApplication.shared.isIdleTimerDisabled = true
             DispatchQueue.main.async {
                 self.sessionLogPath = storage.path; self.sessionShareURL = storage.shareURL
@@ -230,10 +329,15 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             appendLog("C1 \(config.c1.summary) SHA256=\(config.c1.sourceSHA256)")
             appendLog("C2 \(config.c2.summary) SHA256=\(config.c2.sourceSHA256)")
             updateSessionFile(status: "running")
+            notifyCaptureReady(config, storageSessionID: sessionID)
         } catch {
             stateLock.lock(); runningValue = false; stateLock.unlock()
-            cleanupAudio(); storage?.close()
-            DispatchQueue.main.async { self.isRunning = false; self.stateName = "STOPPED"; self.status = "启动失败：\(error.localizedDescription)" }
+            cleanupAudio(); storage?.close(); storage = nil
+            notifyStartupFailure(config, reason: error.localizedDescription)
+            DispatchQueue.main.async {
+                self.isRunning = false; self.stateName = "STOPPED"; self.status = "启动失败：\(error.localizedDescription)"
+                self.configureIdle(config)
+            }
         }
     }
 
@@ -283,11 +387,15 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         return buffer
     }
 
-    private func startControlServer(_ config: ResponderConfiguration) {
+    private func startControlServer(_ config: ResponderConfiguration, idle: Bool) {
         let server = UDPControlServer(
             port: config.controlPort, allowedHost: config.linuxHost,
             onArm: { [weak self] command, source in
                 guard let self else { return .init(accepted: false, reason: "session_not_ready") }
+                guard !idle else {
+                    self.appendLog("ARM ignored while idle from=\(source)")
+                    return .init(accepted: false, reason: "session_not_ready")
+                }
                 var result = ArmAcceptResult(accepted: false, reason: "session_not_ready")
                 self.analysisQueue.sync {
                     result = self.pairing.accept(command, nowMilliseconds: Self.uptimeMilliseconds())
@@ -311,6 +419,103 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
                 return result
             },
             onReplyAck: { [weak self] ack, source in self?.receiveReplyAcknowledgement(ack, source: source) },
+            onCaptureStart: { [weak self] command, source in
+                guard let self else { return .init(accepted: false, state: "rejected", reason: "responder_unavailable") }
+                guard command.protocolVersion == 1 else {
+                    return .init(accepted: false, state: "rejected", reason: "unsupported_protocol_version")
+                }
+                guard command.linuxResultPort == config.resultPort else {
+                    return .init(accepted: false, state: "rejected", reason: "linux_result_port_mismatch")
+                }
+                let sourcePort = UInt16(source.split(separator: ":").last.map(String.init) ?? "")
+                guard sourcePort == command.linuxResultPort else {
+                    return .init(accepted: false, state: "rejected", reason: "linux_source_port_mismatch")
+                }
+                self.stateLock.lock()
+                let active = self.runningValue
+                let duplicateStarting = self.pendingStartupCommandID == command.commandID
+                let anotherStarting = self.pendingStartupCommandID != nil && !duplicateStarting
+                if !active, !duplicateStarting, !anotherStarting {
+                    self.pendingStartupCommandID = command.commandID
+                }
+                self.stateLock.unlock()
+                guard idle, !active else {
+                    return .init(accepted: false, state: "already_running", reason: "ios_session_already_active")
+                }
+                if duplicateStarting {
+                    return .init(accepted: true, state: "starting", reason: "duplicate_start_reack")
+                }
+                guard !anotherStarting else {
+                    return .init(accepted: false, state: "starting", reason: "another_start_command_pending")
+                }
+                var remoteConfig = config
+                remoteConfig.startupCommandID = command.commandID
+                self.appendLog("REMOTE_CAPTURE_START from=\(source) command=\(command.commandID)")
+                // Give UDPControlServer time to send START_CAPTURE_ACK before
+                // start() closes the idle socket and opens the formal server.
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) {
+                    self.start(remoteConfig)
+                }
+                return .init(accepted: true, state: "starting", reason: "accepted_remote_start")
+            },
+            onCaptureStop: { [weak self] command, source in
+                guard let self else { return .init(accepted: false, state: "rejected", reason: "responder_unavailable") }
+                guard command.protocolVersion == 1 else {
+                    return .init(accepted: false, state: "rejected", reason: "unsupported_protocol_version")
+                }
+                guard command.linuxResultPort == config.resultPort else {
+                    return .init(accepted: false, state: "rejected", reason: "linux_result_port_mismatch")
+                }
+                let sourcePort = UInt16(source.split(separator: ":").last.map(String.init) ?? "")
+                guard sourcePort == command.linuxResultPort else {
+                    return .init(accepted: false, state: "rejected", reason: "linux_source_port_mismatch")
+                }
+                self.stateLock.lock()
+                let active = self.runningValue
+                let alreadyStopping = self.remoteStopPending
+                if active, !alreadyStopping { self.remoteStopPending = true }
+                self.stateLock.unlock()
+                guard active else {
+                    return .init(accepted: true, state: "already_stopped", reason: "already_stopped")
+                }
+                if alreadyStopping {
+                    return .init(accepted: true, state: "stopping", reason: "duplicate_stop_reack")
+                }
+                self.appendLog("REMOTE_SAFE_STOP from=\(source) command=\(command.commandID)")
+                self.storage?.appendEvent([
+                    "type": "remote_safe_stop_received", "protocol_version": command.protocolVersion,
+                    "command_id": command.commandID, "source": source
+                ])
+                // ACK is emitted by UDPControlServer immediately after this
+                // handler returns; finalization follows on a different queue.
+                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .milliseconds(50)) {
+                    self.stop()
+                }
+                return .init(accepted: true, state: "stopping", reason: "accepted_safe_stop")
+            },
+            onCaptureOnceAck: { [weak self] acknowledgement, source in
+                guard let self else { return }
+                self.stateLock.lock()
+                let matchesPending = self.pendingCaptureRequestID == acknowledgement.requestID
+                if matchesPending { self.pendingCaptureRequestID = nil }
+                self.stateLock.unlock()
+                guard matchesPending else {
+                    self.appendLog("CAPTURE_ONCE_ACK_IGNORED from=\(source) request=\(acknowledgement.requestID) reason=no_matching_request")
+                    return
+                }
+                let detail = acknowledgement.measurementID.map { " measurement=\($0)" } ?? ""
+                let message = acknowledgement.accepted
+                    ? "Linux 已接受单次采集请求\(detail)"
+                    : "Linux 拒绝单次采集：\(acknowledgement.reason)（\(acknowledgement.state)）"
+                self.publishCaptureRequestStatus(message)
+                self.appendLog("CAPTURE_ONCE_ACK from=\(source) request=\(acknowledgement.requestID) accepted=\(acknowledgement.accepted) reason=\(acknowledgement.reason)\(detail)")
+                self.storage?.appendEvent([
+                    "type": "capture_once_ack", "request_id": acknowledgement.requestID,
+                    "accepted": acknowledgement.accepted, "state": acknowledgement.state,
+                    "reason": acknowledgement.reason, "source": source,
+                    "measurement_id": acknowledgement.measurementID.map { $0 as Any } ?? NSNull()
+                ])
+            },
             onLog: { [weak self] message in self?.appendLog(message) }
         )
         controlServer = server; server.start()
@@ -381,6 +586,10 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         let playbackCompletion = DispatchSemaphore(value: 0)
         player.stop()
         player.scheduleBuffer(c2Buffer, at: nil, options: .interrupts, completionCallbackType: .dataPlayedBack) { playbackCompletion.signal() }
+        // This is the transmitter pose associated with the RIR received by Linux.
+        // The earlier snapshot remains attached to the C1/t2 receive event.
+        let txPose = poseSnapshot()
+        stateLock.lock(); lastPoseValue = txPose; stateLock.unlock()
         player.play(at: AVAudioTime(hostTime: targetHostTime))
         DispatchQueue.main.async { self.stateName = "C2_PLAYING" }
         appendLog("C2_SCHEDULED measurement=\(claim.measurementID) host_time=\(targetHostTime)")
@@ -389,9 +598,11 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         stateLock.lock()
         let anchor = latestAnchor, routeStable = routeGeneration == routeAtDetection && !audioInterrupted
         stateLock.unlock()
-        let t3 = anchor.map { Self.project(hostTime: targetHostTime, from: $0) }
+        let projectedT3 = anchor.map { Self.project(hostTime: targetHostTime, from: $0) }
+        let localC2 = detectLocalC2AcousticT3(detection: detection, template: config.c2.samples)
+        let t3 = localC2?.t3Sample
         let delay = t3.map { $0 - t2 }
-        let timingValid = playbackVerified && routeStable && (delay.map { $0 >= 0 && $0 <= Int64(ProbeDefaults.sampleRate) } ?? false)
+        let timingValid = playbackVerified && (delay.map { $0 >= 0 && $0 <= Int64(ProbeDefaults.sampleRate) } ?? false)
         stateLock.lock(); replyDelayValue = timingValid ? delay : nil; t3PreciseValue = timingValid; stateLock.unlock()
         DispatchQueue.main.async { self.stateName = "REPORTING" }
 
@@ -412,12 +623,25 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             "audio_track_head_before": 0, "audio_track_head_after": playbackVerified ? config.c2.samples.count : 0,
             "audio_track_timestamp_valid": true, "audio_track_underruns": -1,
             "input_route": route.inputs.first?.portName ?? "unknown", "output_route": route.outputs.first?.portName ?? "unknown",
-            "route_stable": routeStable, "t3_method": timingValid ? "AVAudioTime_hostTime_capture_projection" : "unavailable"
+            "route_stable": routeStable,
+            "audio_track_t3_estimate_sample": projectedT3.map { $0 as Any } ?? NSNull(),
+            "local_c2_acoustic_score": localC2.map { $0.score as Any } ?? NSNull(),
+            "local_c2_segment_offset_samples": localC2.map { $0.segmentOffsetSamples as Any } ?? NSNull(),
+            "local_c2_segment_length_samples": localC2.map { $0.segmentLengthSamples as Any } ?? NSNull(),
+            "t3_method": timingValid ? "local_C2_acoustic_detection_on_AVAudioEngine_input_timeline" : "unavailable",
+            "ios_pose_captured_at": "c2_playback_issued"
         ]
         if timingValid, let t3, let delay { reply["t3_sample"] = t3; reply["reply_delay_samples"] = delay; reply["error"] = NSNull() }
-        else { reply["t3_sample"] = NSNull(); reply["reply_delay_samples"] = NSNull(); reply["error"] = playbackVerified ? "route_or_capture_timestamp_invalid" : "hardware_playback_not_verified" }
-        reply.merge(pose.wireFields) { _, new in new }
+        else { reply["t3_sample"] = NSNull(); reply["reply_delay_samples"] = NSNull(); reply["error"] = playbackVerified ? "local_c2_acoustic_detection_unavailable" : "hardware_playback_not_verified" }
+        reply.merge(txPose.wireFields) { _, new in new }
         storage?.appendEvent(reply)
+        var txPoseEvent: [String: Any] = [
+            "type": "manual_pose_snapshot", "session_id": claim.sessionID,
+            "measurement_id": claim.measurementID, "captured_at": "c2_playback_issued",
+            "t3_sample": t3.map { $0 as Any } ?? NSNull()
+        ]
+        txPoseEvent.merge(txPose.wireFields) { _, new in new }
+        storage?.appendEvent(txPoseEvent)
 
         var acknowledged = false
         for attempt in 1...3 where isSessionRunning() {
@@ -450,6 +674,32 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
                 self.status = paused ? "响应完成，仍处于暂停" : "测量 #\(claim.measurementID) 已响应，冷却 800 ms"
             }
         }
+    }
+
+    private func detectLocalC2AcousticT3(detection: C1Detection, template: [Float]) -> LocalC2Detection? {
+        guard let t2 = detection.t2Sample else { return nil }
+        let deadline = DispatchTime.now() + .milliseconds(900)
+        var nextAnalysisAt = detection.detectionCompletedAtSample + 18_000
+        while isSessionRunning(), DispatchTime.now() < deadline {
+            stateLock.lock(); let captured = totalSamples; stateLock.unlock()
+            if captured >= nextAnalysisAt {
+                let window: [Float]? = analysisQueue.sync {
+                    detector.window(centerSample: t2 + 24_000, before: 24_000, after: 24_000)
+                }
+                if let window,
+                   let found = LocalC2AcousticDetector.detect(
+                    audio: window, windowStartSample: t2, fullTemplate: template,
+                    searchStartSample: detection.detectionCompletedAtSample
+                   ) {
+                    appendLog(String(format: "LOCAL_C2_ACOUSTIC t3_sample=%lld score=%.3f", found.t3Sample, found.score))
+                    return found
+                }
+                nextAnalysisAt = captured + 4_800
+            }
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+        appendLog("LOCAL_C2_ACOUSTIC_NOT_FOUND; AVAudioTime projection remains diagnostic only")
+        return nil
     }
 
     private func receiveReplyAcknowledgement(_ acknowledgement: ReplyAcknowledgement, source: String) {
@@ -496,6 +746,35 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         DispatchQueue.main.async { self.inputRoute = input; self.outputRoute = output }
     }
 
+    private func notifyCaptureReady(_ config: ResponderConfiguration, storageSessionID: String) {
+        guard let commandID = config.startupCommandID else { return }
+        sendControlRepeated([
+            "type": "capture_ready", "protocol_version": 1,
+            "command_id": commandID, "receiver": "ios",
+            "ios_storage_session_id": storageSessionID,
+            "sample_rate": Int(ProbeDefaults.sampleRate),
+            "control_port": Int(config.controlPort), "audio_record_open": true
+        ], config: config)
+        appendLog("CAPTURE_READY command=\(commandID) -> \(config.linuxHost):\(config.resultPort)")
+    }
+
+    private func notifyStartupFailure(_ config: ResponderConfiguration, reason: String) {
+        guard let commandID = config.startupCommandID else { return }
+        sendControlRepeated([
+            "type": "capture_start_failed", "protocol_version": 1,
+            "command_id": commandID, "receiver": "ios", "reason": reason
+        ], config: config)
+    }
+
+    private func sendControlRepeated(_ object: [String: Any], config: ResponderConfiguration) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            for attempt in 0..<3 {
+                _ = try? UDPControlServer.sendJSON(object, host: config.linuxHost, port: config.resultPort)
+                if attempt < 2 { Thread.sleep(forTimeInterval: 0.10) }
+            }
+        }
+    }
+
     private func updateSessionFile(status: String) {
         stateLock.lock()
         var values: [String: Any] = [
@@ -533,6 +812,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     }
 
     private func publishStatus(_ value: String) { DispatchQueue.main.async { self.status = value } }
+    private func publishCaptureRequestStatus(_ value: String) { DispatchQueue.main.async { self.captureRequestStatus = value } }
     private func isSessionRunning() -> Bool { stateLock.lock(); defer { stateLock.unlock() }; return runningValue }
     private func replyWasAcknowledged(_ eventID: String) -> Bool { stateLock.lock(); defer { stateLock.unlock() }; return pendingReply?.event == eventID }
     private static func uptimeMilliseconds() -> Int64 { Int64(ProcessInfo.processInfo.systemUptime * 1_000) }

@@ -50,8 +50,12 @@ struct ContentView: View {
                 .padding(.horizontal, 14).padding(.vertical, 10)
             }
         }
-        .onAppear { localIPv4 = LocalNetworkInfo.preferredIPv4() }
-        .onDisappear { if responder.isRunning { responder.stop() } }
+        .onAppear {
+            localIPv4 = LocalNetworkInfo.preferredIPv4()
+            configureIdleListener()
+        }
+        .onChange(of: idleConfigurationKey) { _, _ in configureIdleListener() }
+        .onDisappear { responder.shutdown() }
         .fileImporter(isPresented: $importingC1, allowedContentTypes: [.wav, .audio]) { result in
             if case let .success(url) = result { probes.select(url, for: .c1) }
         }
@@ -68,8 +72,8 @@ struct ContentView: View {
             Image(systemName: responder.isRunning ? "wave.3.right.circle.fill" : "iphone.gen3")
                 .font(.system(size: 34)).foregroundStyle(responder.isRunning ? .green : .cyan)
             VStack(alignment: .leading, spacing: 3) {
-                Text("AV-Twin iOS Responder v0.9.0").font(.headline)
-                Text("STRICT ARM：一个有效 ARM 最多触发一次 C2").font(.caption2).foregroundStyle(.secondary)
+                Text("AV-Twin iOS Responder v0.13.0").font(.headline)
+                Text("与 Android v0.12 对齐：远程启停、声学 t3、STRICT ARM").font(.caption2).foregroundStyle(.secondary)
                 Text(responder.status).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -129,7 +133,7 @@ struct ContentView: View {
     private var networkCard: some View {
         VStack(alignment: .leading, spacing: 9) {
             Label("Wi-Fi / UDP", systemImage: "network").font(.subheadline.bold())
-            Text("iPhone Wi-Fi IPv4：\(localIPv4)\nLinux ARM 目标：\(localIPv4):\(controlPort)\n接口：\(LocalNetworkInfo.display())")
+            Text("iPhone Wi-Fi IPv4：\(localIPv4)\nLinux ARM/远程启停目标：\(localIPv4):\(controlPort)\n接口：\(LocalNetworkInfo.display())")
                 .font(.caption.monospaced()).textSelection(.enabled)
             TextField("Linux Wi-Fi IPv4", text: $linuxHost).keyboardType(.numbersAndPunctuation).fieldStyle()
             HStack {
@@ -154,6 +158,11 @@ struct ContentView: View {
     private var sessionCard: some View {
         VStack(spacing: 10) {
             if responder.isRunning {
+                Button { responder.requestCaptureOnce() } label: {
+                    Label("命令 Linux 立即采集一次", systemImage: "record.circle").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent).tint(.blue).disabled(responder.isPaused)
+                Text(responder.captureRequestStatus).font(.caption2).foregroundStyle(.secondary)
                 HStack {
                     Button(responder.isPaused ? "继续监听" : "暂停监听") {
                         responder.isPaused ? responder.resumeListening() : responder.pauseListening()
@@ -172,8 +181,10 @@ struct ContentView: View {
             Label("连通与播放测试", systemImage: "checkmark.circle").font(.subheadline.bold())
             HStack {
                 Button("UDP 双向检验") { if let port = UInt16(resultPort) { responder.testUDP(host: linuxHost, port: port) } }
-                Button("TEST C2 ×20") { responder.testC2Repeated(probes.c2) }
+                Button("TEST C2 单次") { responder.testC2Once(probes.c2) }
             }.buttonStyle(.bordered).disabled(responder.isRunning || responder.isTestingC2)
+            Button("TEST C2 ×20 稳定性") { responder.testC2Repeated(probes.c2) }
+                .buttonStyle(.bordered).disabled(responder.isRunning || responder.isTestingC2)
             if !responder.c2TestProgress.isEmpty {
                 Text(responder.c2TestProgress).font(.system(size: 9, design: .monospaced)).textSelection(.enabled)
             }
@@ -185,7 +196,10 @@ struct ContentView: View {
             HStack { Label("会话指标", systemImage: "gauge.with.dots.needle.67percent").font(.subheadline.bold()); Spacer(); Text(responder.stateName).font(.caption.monospaced()).foregroundStyle(.green) }
             Text("iOS 本地 session：\(responder.localSessionID ?? "--")\nLinux session：\(responder.pairedLinuxSessionID ?? "--（等待 ARM）")\nmeasurement=\(responder.activeMeasurement.map { String($0) } ?? "--") | pending ARM=\(responder.pendingArmMeasurement.map { String($0) } ?? "--")\n成功=\(responder.successfulResponses) | C1 未通过=\(responder.c1Rejected) | C2 失败=\(responder.c2Failures) | UDP 失败=\(responder.udpFailures)\nreply_delay_samples=\(responder.lastReplyDelaySamples.map { String($0) } ?? "--") | t3_precise=\(responder.lastT3Precise)\ninput=\(responder.inputRoute)\noutput=\(responder.outputRoute)")
                 .font(.system(size: 10, design: .monospaced)).textSelection(.enabled)
-            Button(showingLog ? "隐藏诊断日志" : "显示诊断日志") { showingLog.toggle() }.font(.caption)
+            HStack {
+                Button(showingLog ? "隐藏诊断日志" : "显示诊断日志") { showingLog.toggle() }
+                Button("清空界面日志") { responder.clearVisibleLog() }
+            }.font(.caption)
             if let url = responder.sessionShareURL { ShareLink(item: url) { Label("导出会话目录", systemImage: "square.and.arrow.up") } }
         }.card()
     }
@@ -196,12 +210,27 @@ struct ContentView: View {
     }
 
     private var configurationValid: Bool { !linuxHost.isEmpty && UInt16(controlPort) != nil && UInt16(resultPort) != nil }
-    private func startSession() {
-        guard let control = UInt16(controlPort), let result = UInt16(resultPort) else { return }
-        responder.start(.init(
+    private var idleConfigurationKey: String {
+        [linuxHost, controlPort, resultPort, folder.selectedURL?.path ?? "default", probes.c1.internalPCMSHA256,
+         probes.c2.internalPCMSHA256, saveDebugAudio.description].joined(separator: "|")
+    }
+    private func currentConfiguration() -> ResponderConfiguration? {
+        guard let control = UInt16(controlPort), let result = UInt16(resultPort), !linuxHost.isEmpty else { return nil }
+        return .init(
             linuxHost: linuxHost, controlPort: control, resultPort: result,
             resultRootURL: folder.selectedURL, saveDebugAudio: saveDebugAudio, c1: probes.c1, c2: probes.c2
-        ))
+        )
+    }
+    private func configureIdleListener() {
+        guard let config = currentConfiguration() else {
+            responder.clearIdleConfiguration()
+            return
+        }
+        responder.configureIdle(config)
+    }
+    private func startSession() {
+        guard let config = currentConfiguration() else { return }
+        responder.start(config)
     }
     private func coordinate(_ name: String, _ value: Double) -> some View { VStack { Text(name).font(.caption.bold()); Text(String(format: "%+.3f m", value)).font(.caption.monospacedDigit()) }.frame(maxWidth: .infinity).padding(6).background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 7)) }
     private func numberField(_ label: String, _ value: Binding<String>) -> some View { VStack { Text(label).font(.caption2); TextField("0", text: value).keyboardType(.numbersAndPunctuation).multilineTextAlignment(.center).fieldStyle() }.frame(maxWidth: .infinity) }

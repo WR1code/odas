@@ -14,7 +14,9 @@ final class StreamingC1Detector {
     private let template: [Float]
     private let activeStart: Int
     private let segment: [Float]
-    private let capacity = 24_000
+    // Keep 1.5 s so the response worker can correlate the emitted C2 on the
+    // same microphone sample timeline after C1 detection.
+    private let capacity = 72_000
     private var samples: [Float] = []
     private var baseSample: Int64 = 0
     private var lastRejectedAt = Int64.min

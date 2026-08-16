@@ -186,6 +186,36 @@ def test_timed_mode_never_overlaps_and_records_busy_skips(monkeypatch, tmp_path)
     assert all(right > left for left, right in zip(backend.play_samples, backend.play_samples[1:]))
 
 
+def test_ios_button_can_insert_capture_in_timed_mode(monkeypatch, tmp_path) -> None:
+    patch_hardware(monkeypatch)
+    cfg, c1, c2 = config(tmp_path, "timed_continuous", max_measurements=1)
+    cfg.startup_countdown = 5.0
+    cfg.android_host = "192.0.2.10"
+    udp = AckingUdp(accepted=True)
+    udp.messages.append({
+        "type": "capture_once_request", "protocol_version": 1,
+        "request_id": "ios-request-1", "ios_control_port": cfg.android_port,
+        "source": "192.0.2.10:49152",
+    })
+    controller = continuous.ContinuousController(
+        cfg, audio_backend=SimulatedAudio(c1, c2), udp_listener=udp,
+    )
+
+    _directory, summary = controller.run()
+
+    assert summary["success_count"] == 1
+    acknowledgements = [
+        message for message in udp.sent_messages
+        if message.get("type") == "capture_once_ack"
+    ]
+    assert acknowledgements == [{
+        "type": "capture_once_ack", "protocol_version": 1,
+        "request_id": "ios-request-1", "accepted": True,
+        "state": "ARMED", "reason": "accepted_queued", "receiver": "linux",
+        "measurement_id": None,
+    }]
+
+
 def test_c2_timeout_returns_to_armed_for_next_round(monkeypatch, tmp_path) -> None:
     patch_hardware(monkeypatch)
     cfg, c1, c2 = config(tmp_path, "timed_continuous", max_measurements=2, interval=0.12)

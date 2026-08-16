@@ -157,6 +157,8 @@ class ContinuousController:
         self.next_due_sample: int | None = None
         self._latest_spatial_events: dict[str, Any] = {}
         self._udp_cursor = 0
+        self._capture_request_results: dict[str, tuple[bool, str, str, int | None]] = {}
+        self._capture_request_order: deque[str] = deque()
 
     def notify(self, message: str) -> None:
         line = f"{datetime.now().isoformat(timespec='milliseconds')} {message}"
@@ -234,6 +236,9 @@ class ContinuousController:
         assert self.udp_listener is not None
         messages = self.udp_listener.messages
         for message in messages[self._udp_cursor:]:
+            if message.get("type") == "capture_once_request":
+                self._handle_capture_once_request(message)
+                continue
             event = tracker.ingest(message)
             if message.get("type") == "reply_timing" and message.get("android_event_id"):
                 accepted = event["status"] in {"accepted", "duplicate"}
@@ -272,6 +277,65 @@ class ContinuousController:
         self._udp_cursor = len(messages)
         if self._writer:
             self._writer.append_udp(self.udp_listener.raw_lines)
+
+    def _handle_capture_once_request(self, message: dict[str, Any]) -> None:
+        assert self.udp_listener is not None
+        request_id = message.get("request_id")
+        source_host = str(message.get("source", "")).rsplit(":", 1)[0]
+        expected_host = self.config.android_host
+        if not isinstance(request_id, str) or not request_id:
+            self.notify("IOS_CAPTURE_ONCE_REJECTED：缺少 request_id")
+            return
+        if expected_host and source_host != expected_host:
+            self.notify(
+                f"IOS_CAPTURE_ONCE_REJECTED request={request_id}："
+                f"来源 {source_host} 与配置的移动端 {expected_host} 不一致"
+            )
+            return
+
+        cached = self._capture_request_results.get(request_id)
+        if cached is None:
+            requested_port = message.get("ios_control_port")
+            if message.get("protocol_version") != 1:
+                result = (False, self.state.value, "unsupported_protocol_version", None)
+            elif requested_port != self.config.android_port:
+                result = (False, self.state.value, "ios_control_port_mismatch", None)
+            else:
+                accepted = self.request_capture()
+                result = (
+                    accepted,
+                    self.state.value,
+                    "accepted_queued" if accepted else (
+                        "automatic_capture_paused" if self.pause_event.is_set()
+                        else "capture_session_busy_or_unavailable"
+                    ),
+                    None,
+                )
+            self._capture_request_results[request_id] = result
+            self._capture_request_order.append(request_id)
+            if len(self._capture_request_order) > 256:
+                self._capture_request_results.pop(self._capture_request_order.popleft(), None)
+        else:
+            result = cached
+
+        accepted, state, reason, measurement_id = result
+        acknowledgement = {
+            "type": "capture_once_ack", "protocol_version": 1,
+            "request_id": request_id, "accepted": accepted,
+            "state": state, "reason": reason, "receiver": "linux",
+            "measurement_id": measurement_id,
+        }
+        if expected_host:
+            try:
+                self.udp_listener.send_json(
+                    expected_host, self.config.android_port, acknowledgement,
+                )
+            except OSError as exc:
+                self.notify(f"WARNING: IOS_CAPTURE_ONCE_ACK 发送失败：{exc}")
+        self.notify(
+            f"IOS_CAPTURE_ONCE_ACK request={request_id} accepted={accepted} "
+            f"state={state} reason={reason}"
+        )
 
     def _trigger(self, c1: np.ndarray, tracker: UdpMeasurementTracker) -> dict[str, Any]:
         self.measurement_id += 1
@@ -678,12 +742,11 @@ class ContinuousController:
 
                     if current is None and self.state == CaptureState.ARMED and not self.pause_event.is_set():
                         trigger = False
-                        if cfg.capture_mode == "manual_continuous":
-                            with self._command_lock:
-                                if self._manual_requests:
-                                    self._manual_requests -= 1
-                                    trigger = True
-                        elif self.next_due_sample is not None and end >= self.next_due_sample:
+                        with self._command_lock:
+                            if self._manual_requests:
+                                self._manual_requests -= 1
+                                trigger = True
+                        if not trigger and self.next_due_sample is not None and end >= self.next_due_sample:
                             trigger = True
                         if trigger:
                             current = self._trigger(c1, tracker)

@@ -48,6 +48,68 @@ struct ArmAcceptResult: Sendable {
     let reason: String
 }
 
+struct CaptureStartCommand: Sendable {
+    let protocolVersion: Int
+    let commandID: String
+    let linuxResultPort: UInt16
+
+    init?(json: [String: Any]) {
+        guard JSONWire.string(json, "type") == "start_capture",
+              let version = JSONWire.int64(json, "protocol_version"),
+              let commandID = JSONWire.string(json, "command_id"), !commandID.isEmpty,
+              let resultPort = JSONWire.int64(json, "linux_result_port"),
+              let port = UInt16(exactly: resultPort), port > 0
+        else { return nil }
+        protocolVersion = Int(version)
+        self.commandID = commandID
+        linuxResultPort = port
+    }
+}
+
+struct CaptureStopCommand: Sendable {
+    let protocolVersion: Int
+    let commandID: String
+    let linuxResultPort: UInt16
+
+    init?(json: [String: Any]) {
+        guard JSONWire.string(json, "type") == "stop_capture",
+              let version = JSONWire.int64(json, "protocol_version"),
+              let commandID = JSONWire.string(json, "command_id"), !commandID.isEmpty,
+              let resultPort = JSONWire.int64(json, "linux_result_port"),
+              let port = UInt16(exactly: resultPort), port > 0
+        else { return nil }
+        protocolVersion = Int(version)
+        self.commandID = commandID
+        linuxResultPort = port
+    }
+}
+
+struct CaptureCommandResult: Sendable {
+    let accepted: Bool
+    let state: String
+    let reason: String
+}
+
+struct CaptureOnceAcknowledgement: Sendable {
+    let requestID: String
+    let accepted: Bool
+    let state: String
+    let reason: String
+    let measurementID: Int64?
+
+    init?(json: [String: Any]) {
+        guard JSONWire.string(json, "type") == "capture_once_ack",
+              let requestID = JSONWire.string(json, "request_id"), !requestID.isEmpty,
+              let accepted = JSONWire.bool(json, "accepted")
+        else { return nil }
+        self.requestID = requestID
+        self.accepted = accepted
+        state = JSONWire.string(json, "state") ?? "unknown"
+        reason = JSONWire.string(json, "reason") ?? "unknown"
+        measurementID = JSONWire.int64(json, "measurement_id")
+    }
+}
+
 struct PairingClaim: Sendable {
     let sessionID: String
     let measurementID: Int64

@@ -272,7 +272,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
                 for index in 1...repetitions {
                     let completion = DispatchSemaphore(value: 0)
                     player.stop()
-                    player.scheduleBuffer(buffer, at: nil, options: .interrupts, completionCallbackType: .dataPlayedBack) { completion.signal() }
+                    player.scheduleBuffer(buffer, at: nil, options: .interrupts, completionCallbackType: .dataPlayedBack) { _ in completion.signal() }
                     player.play()
                     let verified = completion.wait(timeout: .now() + .milliseconds(Int(probe.durationMilliseconds + 500))) == .success
                     if verified { passed += 1 }
@@ -585,7 +585,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         let targetHostTime = mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.020)
         let playbackCompletion = DispatchSemaphore(value: 0)
         player.stop()
-        player.scheduleBuffer(c2Buffer, at: nil, options: .interrupts, completionCallbackType: .dataPlayedBack) { playbackCompletion.signal() }
+        player.scheduleBuffer(c2Buffer, at: nil, options: .interrupts, completionCallbackType: .dataPlayedBack) { _ in playbackCompletion.signal() }
         // This is the transmitter pose associated with the RIR received by Linux.
         // The earlier snapshot remains attached to the C1/t2 receive event.
         let txPose = poseSnapshot()

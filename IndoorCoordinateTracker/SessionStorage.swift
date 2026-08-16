@@ -11,7 +11,7 @@ final class FolderSelectionStore: ObservableObject {
         var stale = false
         if let url = try? URL(
             resolvingBookmarkData: bookmark,
-            options: .withSecurityScope,
+            options: .withoutUI,
             relativeTo: nil,
             bookmarkDataIsStale: &stale
         ), !stale {
@@ -24,7 +24,7 @@ final class FolderSelectionStore: ObservableObject {
         let accessed = url.startAccessingSecurityScopedResource()
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
         try Self.validate(url)
-        let bookmark = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+        let bookmark = try url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)
         UserDefaults.standard.set(bookmark, forKey: bookmarkKey)
         selectedURL = url
         status = "结果目录：\(url.lastPathComponent)，读写验证通过"

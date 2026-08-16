@@ -270,7 +270,7 @@ final class ProbeSelectionStore: ObservableObject {
             let accessed = url.startAccessingSecurityScopedResource()
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
             let probe = try WavProbeLoader.load(url)
-            let bookmark = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+            let bookmark = try url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)
             UserDefaults.standard.set(bookmark, forKey: key(slot))
             if slot == .c1 { c1 = probe } else { c2 = probe }
             lastError = nil
@@ -286,8 +286,13 @@ final class ProbeSelectionStore: ObservableObject {
     private func restore(_ slot: ProbeSlot) {
         guard let bookmark = UserDefaults.standard.data(forKey: key(slot)) else { return }
         var stale = false
-        guard let url = try? URL(resolvingBookmarkData: bookmark, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &stale),
-              !stale, let probe = try? WavProbeLoader.load(url) else {
+        guard let url = try? URL(resolvingBookmarkData: bookmark, options: .withoutUI, relativeTo: nil, bookmarkDataIsStale: &stale),
+              !stale else {
+            UserDefaults.standard.removeObject(forKey: key(slot)); return
+        }
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        guard let probe = try? WavProbeLoader.load(url) else {
             UserDefaults.standard.removeObject(forKey: key(slot)); return
         }
         if slot == .c1 { c1 = probe } else { c2 = probe }

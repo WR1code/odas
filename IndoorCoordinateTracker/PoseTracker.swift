@@ -110,7 +110,25 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
             SIMD3<Float>(transform.columns.1.x, transform.columns.1.y, transform.columns.1.z),
             SIMD3<Float>(transform.columns.2.x, transform.columns.2.y, transform.columns.2.z)
         )
-        let quaternion = simd_quatd(simd_quatf(basisFlip * rawRotation * basisFlip))
+        let correctedRotation = basisFlip * rawRotation * basisFlip
+        let doubleRotation = simd_double3x3(
+            SIMD3<Double>(
+                Double(correctedRotation.columns.0.x),
+                Double(correctedRotation.columns.0.y),
+                Double(correctedRotation.columns.0.z)
+            ),
+            SIMD3<Double>(
+                Double(correctedRotation.columns.1.x),
+                Double(correctedRotation.columns.1.y),
+                Double(correctedRotation.columns.1.z)
+            ),
+            SIMD3<Double>(
+                Double(correctedRotation.columns.2.x),
+                Double(correctedRotation.columns.2.y),
+                Double(correctedRotation.columns.2.z)
+            )
+        )
+        let quaternion = simd_quatd(doubleRotation)
         let euler = Self.zyxEulerDegrees(quaternion)
         let pose = DevicePose(
             source: "ios_arkit_world_tracking",

@@ -70,13 +70,25 @@ struct DevicePose: Sendable {
     }
 }
 
+struct CapturePoint: Identifiable, Sendable {
+    let id: UUID
+    let sequence: Int
+    let measurementID: Int64
+    let coordinate: SIMD3<Double>
+    let arWorldPosition: SIMD3<Float>
+}
+
 final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @unchecked Sendable {
     @Published private(set) var currentPose = DevicePose.unavailable
     @Published private(set) var statusText = "等待 ARKit 初始化"
+    @Published private(set) var capturePoints: [CapturePoint] = []
 
     private let poseLock = NSLock()
     private var latestPose = DevicePose.unavailable
     private var origin: SIMD3<Float>?
+    private var originBasis: simd_float3x3?
+    private var latestARWorldPosition: SIMD3<Float>?
+    private var captureSequence = 0
     private var resetRequested = true
 
     func snapshot() -> DevicePose {
@@ -91,26 +103,73 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
         poseLock.unlock()
     }
 
+    /// Records one completed C1 -> C2 exchange at the phone's physical AR
+    /// position. `pose` supplies the coordinate printed beside the marker,
+    /// while the AR-world position keeps the marker fixed as the camera moves.
+    func recordCapturePoint(measurementID: Int64, pose: DevicePose) {
+        poseLock.lock()
+        let arWorldPosition: SIMD3<Float>?
+        if pose.source == "ios_arkit_world_tracking", let origin, let originBasis {
+            let relative = SIMD3<Float>(
+                Float(pose.position.x), Float(pose.position.y), Float(pose.position.z)
+            )
+            arWorldPosition = origin + originBasis * relative
+        } else {
+            arWorldPosition = latestARWorldPosition
+        }
+        guard let arWorldPosition else {
+            poseLock.unlock()
+            return
+        }
+        captureSequence += 1
+        let point = CapturePoint(
+            id: UUID(), sequence: captureSequence, measurementID: measurementID,
+            coordinate: pose.position, arWorldPosition: arWorldPosition
+        )
+        poseLock.unlock()
+        DispatchQueue.main.async { [weak self] in self?.capturePoints.append(point) }
+    }
+
+    func clearCapturePoints() {
+        poseLock.lock()
+        captureSequence = 0
+        poseLock.unlock()
+        DispatchQueue.main.async { [weak self] in self?.capturePoints.removeAll() }
+    }
+
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         let transform = frame.camera.transform
         let current = SIMD3<Float>(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
-        poseLock.lock()
-        if resetRequested || origin == nil {
-            origin = current
-            resetRequested = false
-        }
-        let relative = current - (origin ?? current)
-        poseLock.unlock()
-        // Match the original coordinate tracker: ARKit camera-forward is -Z, while the
-        // user-facing/exported frame uses +Z forward.
-        let position = SIMD3<Double>(Double(relative.x), Double(relative.y), Double(-relative.z))
-        let basisFlip = simd_float3x3(diagonal: SIMD3<Float>(1, 1, -1))
         let rawRotation = simd_float3x3(
             SIMD3<Float>(transform.columns.0.x, transform.columns.0.y, transform.columns.0.z),
             SIMD3<Float>(transform.columns.1.x, transform.columns.1.y, transform.columns.1.z),
             SIMD3<Float>(transform.columns.2.x, transform.columns.2.y, transform.columns.2.z)
         )
-        let correctedRotation = basisFlip * rawRotation * basisFlip
+        let currentHorizontalBasis = Self.horizontalFLUBasis(cameraRotation: rawRotation)
+        poseLock.lock()
+        latestARWorldPosition = current
+        if resetRequested || origin == nil {
+            origin = current
+            originBasis = currentHorizontalBasis
+            resetRequested = false
+        }
+        let relative = current - (origin ?? current)
+        let referenceBasis = originBasis ?? currentHorizontalBasis
+        poseLock.unlock()
+        // `referenceBasis` columns are the reset-time X-forward, Y-left and
+        // gravity-aligned Z-up axes expressed in ARKit world coordinates.
+        let translated = referenceBasis.transpose * relative
+        let position = SIMD3<Double>(Double(translated.x), Double(translated.y), Double(translated.z))
+        // ARKit exposes camera axes in its landscape camera convention. This
+        // app is portrait-only, so map those axes to the physical phone body:
+        // X forward, Y to the phone's left, Z toward the top edge. Without
+        // this portrait compensation an upright phone reads roughly 90° roll.
+        let cameraFLUInARWorld = simd_float3x3(
+            -rawRotation.columns.2,
+            -rawRotation.columns.1,
+            -rawRotation.columns.0
+        )
+        let correctedRotation = referenceBasis.transpose * cameraFLUInARWorld
         let doubleRotation = simd_double3x3(
             SIMD3<Double>(
                 Double(correctedRotation.columns.0.x),
@@ -129,10 +188,10 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
             )
         )
         let quaternion = simd_quatd(doubleRotation)
-        let euler = Self.zyxEulerDegrees(quaternion)
+        let euler = Self.navigationAnglesDegrees(quaternion)
         let pose = DevicePose(
             source: "ios_arkit_world_tracking",
-            frameID: "arkit_user_origin_x_right_y_up_z_forward",
+            frameID: "arkit_user_origin_x_forward_y_left_z_up",
             revision: Int64(frame.timestamp * 1_000),
             position: position,
             orientation: quaternion,
@@ -182,12 +241,25 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
         }
     }
 
-    private static func zyxEulerDegrees(_ quaternion: simd_quatd) -> (yaw: Double, pitch: Double, roll: Double) {
-        let x = quaternion.imag.x, y = quaternion.imag.y, z = quaternion.imag.z, w = quaternion.real
-        let roll = atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
-        let pitchTerm = max(-1.0, min(1.0, 2 * (w * y - z * x)))
-        let pitch = asin(pitchTerm)
-        let yaw = atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+    private static func horizontalFLUBasis(cameraRotation: simd_float3x3) -> simd_float3x3 {
+        let worldUp = SIMD3<Float>(0, 1, 0)
+        var forward = -cameraRotation.columns.2
+        forward.y = 0
+        if simd_length_squared(forward) < 1e-6 { forward = SIMD3<Float>(0, 0, -1) }
+        forward = simd_normalize(forward)
+        let left = simd_normalize(simd_cross(worldUp, forward))
+        return simd_float3x3(forward, left, worldUp)
+    }
+
+    /// Navigation angles for X-forward, Y-left, Z-up coordinates.
+    /// Yaw is positive toward +Y (left), pitch is nose-up, and roll is about +X.
+    private static func navigationAnglesDegrees(_ quaternion: simd_quatd) -> (yaw: Double, pitch: Double, roll: Double) {
+        let forward = quaternion.act(SIMD3<Double>(1, 0, 0))
+        let left = quaternion.act(SIMD3<Double>(0, 1, 0))
+        let up = quaternion.act(SIMD3<Double>(0, 0, 1))
+        let yaw = atan2(forward.y, forward.x)
+        let pitch = atan2(forward.z, hypot(forward.x, forward.y))
+        let roll = atan2(left.z, up.z)
         return (yaw * 180 / .pi, pitch * 180 / .pi, roll * 180 / .pi)
     }
 }
@@ -254,13 +326,10 @@ final class PoseSelectionStore: ObservableObject, @unchecked Sendable {
 
     private static func makeManual(_ values: [Double], revision: Int64) -> DevicePose {
         let yaw = values[3] * .pi / 180, pitch = values[4] * .pi / 180, roll = values[5] * .pi / 180
-        let cy = cos(yaw / 2), sy = sin(yaw / 2), cp = cos(pitch / 2), sp = sin(pitch / 2), cr = cos(roll / 2), sr = sin(roll / 2)
-        let quaternion = simd_quatd(
-            ix: sr * cp * cy - cr * sp * sy,
-            iy: cr * sp * cy + sr * cp * sy,
-            iz: cr * cp * sy - sr * sp * cy,
-            r: cr * cp * cy + sr * sp * sy
-        )
+        let yawRotation = simd_quatd(angle: yaw, axis: SIMD3<Double>(0, 0, 1))
+        let pitchRotation = simd_quatd(angle: -pitch, axis: SIMD3<Double>(0, 1, 0))
+        let rollRotation = simd_quatd(angle: roll, axis: SIMD3<Double>(1, 0, 0))
+        let quaternion = yawRotation * pitchRotation * rollRotation
         return DevicePose(
             source: "ios_manual_input", frameID: "manual_map", revision: revision,
             position: SIMD3<Double>(values[0], values[1], values[2]), orientation: quaternion,

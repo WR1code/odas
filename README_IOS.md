@@ -1,4 +1,27 @@
-# AV-Twin iPhone Responder v0.13.0
+# AV-Twin iPhone Responder v0.13.2
+
+## 本次界面修复
+
+- 热点地址固定从 `bridge100` 读取，不再把蜂窝接口 `pdp_ip0` 显示成 iPhone Wi-Fi/热点地址。
+- Linux ARM/远程启停目标显示用户填写的 Linux 地址，而不是 iPhone 本机地址。
+- ARKit 相机改为位姿坐标下方的独立预览，不再作为整个页面背景。
+- 新增 XY 平面当前朝向图和圆形手机水平仪；倾斜点回到明确标注的水平中心即为水平。
+- 相机预览内的 XYZ 轴严格放在重置瞬间的手机 AR 位置；同一个按钮同时重设位姿与可视原点。
+- 相机视野动态绘制当前位置到原点的黄色连线，并在线上标注实时距离。
+- 开始会话与采集控制移动到相机预览之后。
+- C1/C2 模块新增 0–24 kHz 频谱缩略图，选择 WAV 后随探针更新。
+
+## v0.13.1 修复
+
+- 修复 C1/C2/结果目录分别叠加多个 `fileImporter` 时，iPhone 上按钮看似可用但文件选择器可能不弹出的情况；现在统一使用一个文件选择入口。
+- 新增“允许 Linux 在空闲时远程启动 iPhone 会话”开关；关闭后不会在空闲状态监听 `START_CAPTURE`，但仍可在 iPhone 上手动开始 STRICT ARM 会话。
+- 文件选择按钮增加状态提示，便于判断点击事件是否已触发。
+
+## v0.13.2 改进
+
+- 修正竖屏手机机身坐标映射：手机竖直、摄像头朝向水平时横滚角为 0°，不再偏置约 90°。
+- 每次 C1 → C2 硬件播放成功后，在相机预览中保留手机当时位置的 AR 坐标点。
+- 采集点显示采集序号、measurement ID 和 XYZ，小号标签并按六种颜色循环，支持一键清空。
 
 面向 iPhone 15 Pro Max / iOS 17 的原生 SwiftUI + AVFoundation + ARKit 工程。当前功能已对齐 Android `v0.12.0-remote-safe-stop`，并增加 iPhone LiDAR/ARKit 自动位姿和由 iPhone 命令 Linux 立即插入一轮采集。
 
@@ -16,7 +39,7 @@
 - C2 从持续打开的麦克风输入时间线做自声相关，声学检测成功才报告 `t3_precise=true`
 - C1/t2 与 C2/t3 分别冻结接收位姿和发射位姿；回传 Linux 的 Tx 位姿取 C2 发声时刻
 - Linux 定时自动采集运行时，可在 iPhone 点击“命令 Linux 立即采集一次”插入一轮；请求有来源校验、request-id 幂等和 ACK
-- ARKit/LiDAR `sceneDepth` 自动位置与姿态，支持将当前位置设为原点和 +Z 向前
+- ARKit/LiDAR `sceneDepth` 自动位置与姿态，使用 X 朝前、Y 朝左、Z 朝上的 FLU 世界坐标
 - Android 等价的手动 X/Y/Z、Yaw/Pitch/Roll 输入；可在运行中更新
 - C1 接受瞬间冻结所选位姿并写入 JSON/CSV
 - 暂停/继续监听、安全停止、800 ms 最小冷却
@@ -36,14 +59,14 @@
 4. 首次启动允许相机、麦克风和本地网络权限。
 5. 填写 Linux Wi-Fi IPv4，默认 iPhone control `5006`、Linux result `5005`。
 6. 先运行 UDP 双向检验和 C2 ×20，再启动 STRICT ARM 会话。
-7. Linux 端把 ARM 发到界面显示的 `iPhone Wi-Fi IPv4:5006`。
+7. Linux 端把 ARM 发到界面显示的 `iPhone 热点 IPv4:5006`。
 
 ## GitHub Actions 构建 IPA
 
 `.github/workflows/build-avtwin-ios.yml` 在 `macos-15` 上用 Xcode 编译：
 
-- PR 或手动运行且 `sign_ipa=false`：生成 `AVTwinIOSResponder-v0.13.0-unsigned.ipa`。它用于验证和后续重签，不能直接装到普通未越狱 iPhone。
-- 手动运行且 `sign_ipa=true`：导入你自己的证书和 Provisioning Profile，生成可安装的 `AVTwinIOSResponder-v0.13.0-signed.ipa`。
+- PR 或手动运行且 `sign_ipa=false`：生成 `AVTwinIOSResponder-v0.13.2-unsigned.ipa`。它用于验证和后续重签，不能直接装到普通未越狱 iPhone。
+- 手动运行且 `sign_ipa=true`：导入你自己的证书和 Provisioning Profile，生成可安装的 `AVTwinIOSResponder-v0.13.2-signed.ipa`。
 
 已签名模式需要在 GitHub 仓库配置以下 Actions Secrets：
 
@@ -58,7 +81,7 @@ Development 与 Ad Hoc 安装都要求目标 iPhone 的 UDID 已包含在 Profil
 
 ## 坐标与兼容性
 
-ARKit 模式是相对坐标，不是 GPS 经纬度：X 向右、Y 向上、Z 向前，单位米。手动模式使用 Android 相同的 ZYX yaw/pitch/roll 约定。线协议保留 `android_event_id` 和 `android_pose_*` 兼容字段，同时增加 `ios_*` 字段，因此现有 Linux v0.9 不需要改协议解析。
+ARKit 模式是相对坐标，不是 GPS 经纬度：每次重置时，以手机投影到水平面的前方为 +X、左侧为 +Y，世界重力反方向为 +Z，单位米，构成右手 FLU 坐标系。Yaw 绕 +Z 且朝 +Y（左转）为正，Pitch 机头上抬为正，Roll 绕前向 +X。手动模式使用同一套导航角约定。线协议保留 `android_event_id` 和 `android_pose_*` 兼容字段，同时增加 `ios_*` 字段；接收端应以 `ios_pose_frame_id=arkit_user_origin_x_forward_y_left_z_up` 识别该坐标语义。
 
 ## 验证边界
 

@@ -20,9 +20,12 @@ enum LocalNetworkInfo {
         return output
     }
 
-    static func preferredIPv4() -> String {
+    /// Address used by devices connected to this iPhone's Personal Hotspot.
+    /// `pdp_ip0` is the carrier-facing cellular address and must never be
+    /// presented as the hotspot/LAN address.
+    static func hotspotIPv4() -> String {
         let addresses = ipv4Addresses()
-        return addresses.first(where: { $0.name == "en0" })?.address ?? addresses.first?.address ?? "unavailable"
+        return addresses.first(where: { $0.name == "bridge100" })?.address ?? "unavailable"
     }
 
     static func display() -> String {

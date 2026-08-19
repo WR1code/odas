@@ -41,6 +41,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
 
     private struct CaptureAnchor { let sample: Int64; let hostTime: UInt64 }
     private let poseSnapshot: @Sendable () -> DevicePose
+    private let captureCompleted: @Sendable (Int64, DevicePose) -> Void
     private let pairing = ArmPairingManager()
     private var detector = StreamingC1Detector()
     private let stateLock = NSLock()
@@ -75,7 +76,13 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     private var debugCapture: (measurement: Int64, samples: [Float], targetCount: Int)?
     private var idleListenerEnabled = true
 
-    init(poseSnapshot: @escaping @Sendable () -> DevicePose) { self.poseSnapshot = poseSnapshot }
+    init(
+        poseSnapshot: @escaping @Sendable () -> DevicePose,
+        captureCompleted: @escaping @Sendable (Int64, DevicePose) -> Void = { _, _ in }
+    ) {
+        self.poseSnapshot = poseSnapshot
+        self.captureCompleted = captureCompleted
+    }
 
     func configureIdle(_ config: ResponderConfiguration) {
         idleListenerEnabled = true
@@ -94,6 +101,18 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         guard !running else { return }
         controlServer?.stop()
         controlServer = nil
+    }
+
+    func disableIdleRemoteStart() {
+        idleListenerEnabled = false
+        preparedConfiguration = nil
+        stateLock.lock(); let running = runningValue; stateLock.unlock()
+        guard !running else { return }
+        controlServer?.stop()
+        controlServer = nil
+        DispatchQueue.main.async {
+            self.status = "空闲远程启动已关闭；可在本机手动开始 STRICT ARM 会话"
+        }
     }
 
     func shutdown() {
@@ -594,7 +613,11 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         DispatchQueue.main.async { self.stateName = "C2_PLAYING" }
         appendLog("C2_SCHEDULED measurement=\(claim.measurementID) host_time=\(targetHostTime)")
         let playbackVerified = playbackCompletion.wait(timeout: .now() + .milliseconds(Int(config.c2.durationMilliseconds + 500))) == .success
-        if !playbackVerified { stateLock.lock(); c2FailureCount += 1; stateLock.unlock() }
+        if playbackVerified {
+            captureCompleted(claim.measurementID, txPose)
+        } else {
+            stateLock.lock(); c2FailureCount += 1; stateLock.unlock()
+        }
         stateLock.lock()
         let anchor = latestAnchor, routeStable = routeGeneration == routeAtDetection && !audioInterrupted
         stateLock.unlock()

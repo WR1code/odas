@@ -70,12 +70,21 @@ struct DevicePose: Sendable {
     }
 }
 
+enum CapturePointQuality: String, Sendable {
+    case pending
+    case passed
+    case failed
+}
+
 struct CapturePoint: Identifiable, Sendable {
     let id: UUID
     let sequence: Int
+    let sessionID: String
     let measurementID: Int64
     let coordinate: SIMD3<Double>
     let arWorldPosition: SIMD3<Float>
+    var quality: CapturePointQuality
+    var qualityDetail: String
 }
 
 final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @unchecked Sendable {
@@ -89,6 +98,7 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
     private var originBasis: simd_float3x3?
     private var latestARWorldPosition: SIMD3<Float>?
     private var captureSequence = 0
+    private var qualityByMeasurement: [String: (CapturePointQuality, String)] = [:]
     private var resetRequested = true
 
     func snapshot() -> DevicePose {
@@ -106,7 +116,7 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
     /// Records one completed C1 -> C2 exchange at the phone's physical AR
     /// position. `pose` supplies the coordinate printed beside the marker,
     /// while the AR-world position keeps the marker fixed as the camera moves.
-    func recordCapturePoint(measurementID: Int64, pose: DevicePose) {
+    func recordCapturePoint(sessionID: String, measurementID: Int64, pose: DevicePose) {
         poseLock.lock()
         let arWorldPosition: SIMD3<Float>?
         if pose.source == "ios_arkit_world_tracking", let origin, let originBasis {
@@ -122,17 +132,42 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
             return
         }
         captureSequence += 1
+        let key = Self.captureKey(sessionID: sessionID, measurementID: measurementID)
+        let quality = qualityByMeasurement[key] ?? (.pending, "等待 Linux 质量判定")
         let point = CapturePoint(
-            id: UUID(), sequence: captureSequence, measurementID: measurementID,
-            coordinate: pose.position, arWorldPosition: arWorldPosition
+            id: UUID(), sequence: captureSequence, sessionID: sessionID, measurementID: measurementID,
+            coordinate: pose.position, arWorldPosition: arWorldPosition,
+            quality: quality.0, qualityDetail: quality.1
         )
         poseLock.unlock()
         DispatchQueue.main.async { [weak self] in self?.capturePoints.append(point) }
     }
 
+    func updateCaptureQuality(sessionID: String, measurementID: Int64, passed: Bool, detail: String) {
+        let quality: CapturePointQuality = passed ? .passed : .failed
+        let key = Self.captureKey(sessionID: sessionID, measurementID: measurementID)
+        poseLock.lock()
+        qualityByMeasurement[key] = (quality, detail)
+        poseLock.unlock()
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  let index = self.capturePoints.lastIndex(where: {
+                      $0.sessionID == sessionID && $0.measurementID == measurementID
+                  })
+            else { return }
+            self.capturePoints[index].quality = quality
+            self.capturePoints[index].qualityDetail = detail
+        }
+    }
+
+    private static func captureKey(sessionID: String, measurementID: Int64) -> String {
+        "\(sessionID)|\(measurementID)"
+    }
+
     func clearCapturePoints() {
         poseLock.lock()
         captureSequence = 0
+        qualityByMeasurement.removeAll()
         poseLock.unlock()
         DispatchQueue.main.async { [weak self] in self?.capturePoints.removeAll() }
     }

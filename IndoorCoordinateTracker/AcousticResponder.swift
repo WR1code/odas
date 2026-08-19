@@ -15,6 +15,13 @@ struct ResponderConfiguration: Sendable {
     var startupCommandID: String? = nil
 }
 
+enum UDPTestState: Sendable {
+    case idle
+    case testing
+    case passed
+    case failed
+}
+
 final class AcousticResponder: ObservableObject, @unchecked Sendable {
     @Published private(set) var isRunning = false
     @Published private(set) var isPaused = false
@@ -38,10 +45,14 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     @Published private(set) var sessionShareURL: URL?
     @Published private(set) var c2TestProgress = ""
     @Published private(set) var captureRequestStatus = "尚未请求"
+    @Published private(set) var udpTestState: UDPTestState = .idle
+    @Published private(set) var udpTestSummary = "尚未测试"
+    @Published private(set) var lastLinuxQuality = "尚未收到 Linux 质量结果"
 
     private struct CaptureAnchor { let sample: Int64; let hostTime: UInt64 }
     private let poseSnapshot: @Sendable () -> DevicePose
-    private let captureCompleted: @Sendable (Int64, DevicePose) -> Void
+    private let captureCompleted: @Sendable (String, Int64, DevicePose) -> Void
+    private let measurementQualityReceived: @Sendable (String, Int64, Bool, String) -> Void
     private let pairing = ArmPairingManager()
     private var detector = StreamingC1Detector()
     private let stateLock = NSLock()
@@ -78,10 +89,12 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
 
     init(
         poseSnapshot: @escaping @Sendable () -> DevicePose,
-        captureCompleted: @escaping @Sendable (Int64, DevicePose) -> Void = { _, _ in }
+        captureCompleted: @escaping @Sendable (String, Int64, DevicePose) -> Void = { _, _, _ in },
+        measurementQualityReceived: @escaping @Sendable (String, Int64, Bool, String) -> Void = { _, _, _, _ in }
     ) {
         self.poseSnapshot = poseSnapshot
         self.captureCompleted = captureCompleted
+        self.measurementQualityReceived = measurementQualityReceived
     }
 
     func configureIdle(_ config: ResponderConfiguration) {
@@ -254,11 +267,32 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     }
 
     func testUDP(host: String, port: UInt16) {
+        DispatchQueue.main.async {
+            self.udpTestState = .testing
+            self.udpTestSummary = "测试中…"
+        }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
                 let milliseconds = try UDPControlServer.bidirectionalTest(host: host.trimmingCharacters(in: .whitespaces), port: port)
+                DispatchQueue.main.async {
+                    self?.udpTestState = .passed
+                    self?.udpTestSummary = String(format: "PASS · RTT %.2f ms", milliseconds)
+                }
                 self?.publishStatus(String(format: "UDP 双向检验 PASS，RTT %.2f ms（未播放声音）", milliseconds))
-            } catch { self?.publishStatus("UDP 双向检验 FAIL：\(error.localizedDescription)") }
+            } catch {
+                DispatchQueue.main.async {
+                    self?.udpTestState = .failed
+                    self?.udpTestSummary = "FAIL · \(error.localizedDescription)"
+                }
+                self?.publishStatus("UDP 双向检验 FAIL：\(error.localizedDescription)")
+            }
+        }
+    }
+
+    func resetUDPTestState() {
+        DispatchQueue.main.async {
+            self.udpTestState = .idle
+            self.udpTestSummary = "地址或端口已变化，请重新测试"
         }
     }
 
@@ -535,6 +569,34 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
                     "measurement_id": acknowledgement.measurementID.map { $0 as Any } ?? NSNull()
                 ])
             },
+            onMeasurementQuality: { [weak self] quality, source in
+                guard let self else { return .init(accepted: false, reason: "responder_unavailable") }
+                guard quality.protocolVersion == 1 else {
+                    return .init(accepted: false, reason: "unsupported_protocol_version")
+                }
+                guard self.pairing.pairedSessionID() == quality.sessionID else {
+                    self.appendLog("MEASUREMENT_QUALITY_REJECTED from=\(source) measurement=\(quality.measurementID) reason=session_id_mismatch")
+                    return .init(accepted: false, reason: "session_id_mismatch")
+                }
+                let reasonText = quality.failureReasons.isEmpty
+                    ? quality.overall
+                    : quality.failureReasons.joined(separator: "; ")
+                self.measurementQualityReceived(
+                    quality.sessionID, quality.measurementID, quality.passed, reasonText
+                )
+                DispatchQueue.main.async {
+                    self.lastLinuxQuality = "#\(quality.measurementID) \(quality.passed ? "PASS" : "FAIL") · ToF \(quality.tofAvailable ? "可用" : "不可用")"
+                }
+                self.appendLog("MEASUREMENT_QUALITY from=\(source) measurement=\(quality.measurementID) pass=\(quality.passed) overall=\(quality.overall) tof=\(quality.tofAvailable)")
+                self.storage?.appendEvent([
+                    "type": "measurement_quality", "protocol_version": quality.protocolVersion,
+                    "session_id": quality.sessionID, "measurement_id": quality.measurementID,
+                    "quality_pass": quality.passed, "quality_overall": quality.overall,
+                    "quality_failure_reasons": quality.failureReasons,
+                    "tof_available": quality.tofAvailable, "source": source
+                ])
+                return .init(accepted: true, reason: "quality_applied")
+            },
             onLog: { [weak self] message in self?.appendLog(message) }
         )
         controlServer = server; server.start()
@@ -614,7 +676,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         appendLog("C2_SCHEDULED measurement=\(claim.measurementID) host_time=\(targetHostTime)")
         let playbackVerified = playbackCompletion.wait(timeout: .now() + .milliseconds(Int(config.c2.durationMilliseconds + 500))) == .success
         if playbackVerified {
-            captureCompleted(claim.measurementID, txPose)
+            captureCompleted(claim.sessionID, claim.measurementID, txPose)
         } else {
             stateLock.lock(); c2FailureCount += 1; stateLock.unlock()
         }

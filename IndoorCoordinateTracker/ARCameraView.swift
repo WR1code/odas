@@ -68,16 +68,20 @@ struct ARCameraView: UIViewRepresentable {
         private var originPosition = SIMD3<Float>.zero
         private var hasOrigin = false
         private var renderedCaptureIDs = Set<UUID>()
+        private var renderedCaptureQuality: [UUID: CapturePointQuality] = [:]
 
         func syncCapturePoints(_ points: [CapturePoint]) {
             let desiredIDs = Set(points.map(\.id))
             if !renderedCaptureIDs.isSubset(of: desiredIDs) {
                 capturePointsNode.childNodes.forEach { $0.removeFromParentNode() }
                 renderedCaptureIDs.removeAll()
+                renderedCaptureQuality.removeAll()
             }
-            for point in points where !renderedCaptureIDs.contains(point.id) {
+            for point in points where renderedCaptureQuality[point.id] != point.quality {
+                capturePointsNode.childNode(withName: point.id.uuidString, recursively: false)?.removeFromParentNode()
                 capturePointsNode.addChildNode(Self.captureNode(for: point))
                 renderedCaptureIDs.insert(point.id)
+                renderedCaptureQuality[point.id] = point.quality
             }
         }
 
@@ -136,8 +140,19 @@ struct ARCameraView: UIViewRepresentable {
         }
 
         private static func captureNode(for point: CapturePoint) -> SCNNode {
-            let colors: [UIColor] = [.systemCyan, .systemOrange, .systemPink, .systemGreen, .systemPurple, .systemYellow]
-            let color = colors[(point.sequence - 1) % colors.count]
+            let color: UIColor
+            let qualityLabel: String
+            switch point.quality {
+            case .pending:
+                color = .systemYellow
+                qualityLabel = "等待 Linux"
+            case .passed:
+                color = .systemGreen
+                qualityLabel = "PASS"
+            case .failed:
+                color = .systemRed
+                qualityLabel = "FAIL"
+            }
             let root = SCNNode()
             root.name = point.id.uuidString
             root.simdWorldPosition = point.arWorldPosition
@@ -157,8 +172,8 @@ struct ARCameraView: UIViewRepresentable {
 
             let c = point.coordinate
             let label = String(
-                format: "#%d  M%lld\nX%+.2f Y%+.2f Z%+.2f m",
-                point.sequence, point.measurementID, c.x, c.y, c.z
+                format: "#%d  M%lld  %@\nX%+.2f Y%+.2f Z%+.2f m",
+                point.sequence, point.measurementID, qualityLabel, c.x, c.y, c.z
             )
             let textGeometry = SCNText(string: label, extrusionDepth: 0.08)
             textGeometry.font = .boldSystemFont(ofSize: 7)

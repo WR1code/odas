@@ -7,6 +7,7 @@ final class UDPControlServer: @unchecked Sendable {
     typealias CaptureStartHandler = @Sendable (CaptureStartCommand, String) -> CaptureCommandResult
     typealias CaptureStopHandler = @Sendable (CaptureStopCommand, String) -> CaptureCommandResult
     typealias CaptureOnceAckHandler = @Sendable (CaptureOnceAcknowledgement, String) -> Void
+    typealias MeasurementQualityHandler = @Sendable (MeasurementQualityResult, String) -> MeasurementQualityAcceptResult
 
     private let port: UInt16
     private let allowedHost: String
@@ -15,6 +16,7 @@ final class UDPControlServer: @unchecked Sendable {
     private let onCaptureStart: CaptureStartHandler
     private let onCaptureStop: CaptureStopHandler
     private let onCaptureOnceAck: CaptureOnceAckHandler
+    private let onMeasurementQuality: MeasurementQualityHandler
     private let onLog: @Sendable (String) -> Void
     private let queue = DispatchQueue(label: "com.avtwin.ios.udp-control", qos: .userInitiated)
     private let stateLock = NSLock()
@@ -29,6 +31,7 @@ final class UDPControlServer: @unchecked Sendable {
         onCaptureStart: @escaping CaptureStartHandler,
         onCaptureStop: @escaping CaptureStopHandler,
         onCaptureOnceAck: @escaping CaptureOnceAckHandler,
+        onMeasurementQuality: @escaping MeasurementQualityHandler,
         onLog: @escaping @Sendable (String) -> Void
     ) {
         self.port = port
@@ -38,6 +41,7 @@ final class UDPControlServer: @unchecked Sendable {
         self.onCaptureStart = onCaptureStart
         self.onCaptureStop = onCaptureStop
         self.onCaptureOnceAck = onCaptureOnceAck
+        self.onMeasurementQuality = onMeasurementQuality
         self.onLog = onLog
     }
 
@@ -148,6 +152,21 @@ final class UDPControlServer: @unchecked Sendable {
             }
             if let acknowledgement = CaptureOnceAcknowledgement(json: json) {
                 onCaptureOnceAck(acknowledgement, source)
+                continue
+            }
+            if let quality = MeasurementQualityResult(json: json) {
+                let result = onMeasurementQuality(quality, source)
+                let acknowledgement: [String: Any] = [
+                    "type": "measurement_quality_ack", "protocol_version": 1,
+                    "session_id": quality.sessionID,
+                    "measurement_id": quality.measurementID,
+                    "accepted": result.accepted, "reason": result.reason,
+                    "receiver": "ios"
+                ]
+                if let data = try? JSONWire.encode(acknowledgement) {
+                    Self.send(data, descriptor: socketDescriptor, to: &sourceAddress, length: sourceLength)
+                }
+                onLog("MEASUREMENT_QUALITY_ACK measurement=\(quality.measurementID) accepted=\(result.accepted) reason=\(result.reason)")
                 continue
             }
             if let command = CaptureStopCommand(json: json) {

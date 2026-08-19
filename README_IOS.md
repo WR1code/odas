@@ -1,4 +1,4 @@
-# AV-Twin iPhone Responder v0.13.2
+# AV-Twin iPhone Responder v0.13.3
 
 ## 本次界面修复
 
@@ -22,6 +22,13 @@
 - 修正竖屏手机机身坐标映射：手机竖直、摄像头朝向水平时横滚角为 0°，不再偏置约 90°。
 - 每次 C1 → C2 硬件播放成功后，在相机预览中保留手机当时位置的 AR 坐标点。
 - 采集点显示采集序号、measurement ID 和 XYZ，小号标签并按六种颜色循环，支持一键清空。
+
+## v0.13.3 改进
+
+- 顶部显示 iOS 系统热状态：正常、偏热、过热或严重过热；公开 API 不提供虚假的摄氏温度。
+- UDP 双向检验拥有独立状态，成功后按钮保持绿色，并明确提示它不等于声学质量或 ToF 成功。
+- Linux 每轮完成后向 iOS 回传 `measurement_quality`；AR 点黄色表示等待判定、绿色表示质量通过、红色表示失败。
+- 质量消息使用 session 与 measurement 双重关联、三次幂等发送及 iOS ACK，避免串轮或偶发 UDP 丢包。
 
 面向 iPhone 15 Pro Max / iOS 17 的原生 SwiftUI + AVFoundation + ARKit 工程。当前功能已对齐 Android `v0.12.0-remote-safe-stop`，并增加 iPhone LiDAR/ARKit 自动位姿和由 iPhone 命令 Linux 立即插入一轮采集。
 
@@ -65,8 +72,8 @@
 
 `.github/workflows/build-avtwin-ios.yml` 在 `macos-15` 上用 Xcode 编译：
 
-- PR 或手动运行且 `sign_ipa=false`：生成 `AVTwinIOSResponder-v0.13.2-unsigned.ipa`。它用于验证和后续重签，不能直接装到普通未越狱 iPhone。
-- 手动运行且 `sign_ipa=true`：导入你自己的证书和 Provisioning Profile，生成可安装的 `AVTwinIOSResponder-v0.13.2-signed.ipa`。
+- PR 或手动运行且 `sign_ipa=false`：生成 `AVTwinIOSResponder-v0.13.3-unsigned.ipa`。它用于验证和后续重签，不能直接装到普通未越狱 iPhone。
+- 手动运行且 `sign_ipa=true`：导入你自己的证书和 Provisioning Profile，生成可安装的 `AVTwinIOSResponder-v0.13.3-signed.ipa`。
 
 已签名模式需要在 GitHub 仓库配置以下 Actions Secrets：
 

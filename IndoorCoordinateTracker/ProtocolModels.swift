@@ -21,6 +21,41 @@ enum JSONWire {
     static func bool(_ object: [String: Any], _ key: String) -> Bool? {
         object[key] as? Bool
     }
+
+    static func strings(_ object: [String: Any], _ key: String) -> [String] {
+        object[key] as? [String] ?? []
+    }
+}
+
+struct MeasurementQualityResult: Sendable {
+    let protocolVersion: Int
+    let sessionID: String
+    let measurementID: Int64
+    let passed: Bool
+    let overall: String
+    let failureReasons: [String]
+    let tofAvailable: Bool
+
+    init?(json: [String: Any]) {
+        guard JSONWire.string(json, "type") == "measurement_quality",
+              let version = JSONWire.int64(json, "protocol_version"),
+              let sessionID = JSONWire.string(json, "session_id"), !sessionID.isEmpty,
+              let measurementID = JSONWire.int64(json, "measurement_id"),
+              let passed = JSONWire.bool(json, "quality_pass")
+        else { return nil }
+        protocolVersion = Int(version)
+        self.sessionID = sessionID
+        self.measurementID = measurementID
+        self.passed = passed
+        overall = JSONWire.string(json, "quality_overall") ?? (passed ? "PASS" : "FAIL")
+        failureReasons = JSONWire.strings(json, "quality_failure_reasons")
+        tofAvailable = JSONWire.bool(json, "tof_available") ?? false
+    }
+}
+
+struct MeasurementQualityAcceptResult: Sendable {
+    let accepted: Bool
+    let reason: String
 }
 
 struct ArmCommand: Sendable {

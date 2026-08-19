@@ -8,6 +8,7 @@ struct ContentView: View {
     @StateObject private var responder: AcousticResponder
     @StateObject private var probes = ProbeSelectionStore()
     @StateObject private var folder = FolderSelectionStore()
+    @StateObject private var thermalMonitor = DeviceThermalMonitor()
     @AppStorage("linuxHost") private var linuxHost = "192.168.1.100"
     @AppStorage("controlPort") private var controlPort = "5006"
     @AppStorage("resultPort") private var resultPort = "5005"
@@ -32,8 +33,16 @@ struct ContentView: View {
         _poseSelection = StateObject(wrappedValue: selection)
         _responder = StateObject(wrappedValue: AcousticResponder(
             poseSnapshot: { selection.snapshot() },
-            captureCompleted: { [weak poseTracker] measurementID, pose in
-                poseTracker?.recordCapturePoint(measurementID: measurementID, pose: pose)
+            captureCompleted: { [weak poseTracker] sessionID, measurementID, pose in
+                poseTracker?.recordCapturePoint(
+                    sessionID: sessionID, measurementID: measurementID, pose: pose
+                )
+            },
+            measurementQualityReceived: { [weak poseTracker] sessionID, measurementID, passed, detail in
+                poseTracker?.updateCaptureQuality(
+                    sessionID: sessionID, measurementID: measurementID,
+                    passed: passed, detail: detail
+                )
             }
         ))
     }
@@ -61,7 +70,10 @@ struct ContentView: View {
             localIPv4 = LocalNetworkInfo.hotspotIPv4()
             configureIdleListener()
         }
-        .onChange(of: idleConfigurationKey) { _, _ in configureIdleListener() }
+        .onChange(of: idleConfigurationKey) { _, _ in
+            responder.resetUDPTestState()
+            configureIdleListener()
+        }
         .onDisappear { responder.shutdown() }
         .fileImporter(isPresented: $isImportingFile, allowedContentTypes: importTarget.allowedContentTypes) { result in
             handleImportResult(result, target: importTarget)
@@ -69,16 +81,24 @@ struct ContentView: View {
     }
 
     private var headerCard: some View {
-        HStack(spacing: 10) {
-            Image(systemName: responder.isRunning ? "wave.3.right.circle.fill" : "iphone.gen3")
-                .font(.system(size: 34)).foregroundStyle(responder.isRunning ? .green : .cyan)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("AV-Twin iOS Responder v0.13.2").font(.headline)
-                Text("与 Android v0.12 对齐：远程启停、声学 t3、STRICT ARM").font(.caption2).foregroundStyle(.secondary)
-                Text(responder.status).font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: responder.isRunning ? "wave.3.right.circle.fill" : "iphone.gen3")
+                    .font(.system(size: 34)).foregroundStyle(responder.isRunning ? .green : .cyan)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("AV-Twin iOS Responder v0.13.3").font(.headline)
+                    Text("与 Android v0.12 对齐：远程启停、声学 t3、STRICT ARM").font(.caption2).foregroundStyle(.secondary)
+                    Text(responder.status).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if responder.isRunning { ProgressView().tint(.green) }
             }
-            Spacer()
-            if responder.isRunning { ProgressView().tint(.green) }
+            HStack(spacing: 7) {
+                Circle().fill(thermalMonitor.color).frame(width: 9, height: 9)
+                Text("设备热状态：\(thermalMonitor.label)").font(.caption.bold())
+                Spacer()
+                Text("iOS 不提供精确 ℃").font(.caption2).foregroundStyle(.secondary)
+            }
         }.card()
     }
 
@@ -146,7 +166,7 @@ struct ContentView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay { RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.18)) }
                     HStack {
-                        Text("已保留 \(poseTracker.capturePoints.count) 个采集点；颜色按采集顺序循环")
+                        Text("已保留 \(poseTracker.capturePoints.count) 个采集点；黄=等待，绿=成功，红=失败")
                             .font(.caption2).foregroundStyle(.secondary)
                         Spacer()
                         if !poseTracker.capturePoints.isEmpty {
@@ -230,9 +250,19 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 8) {
             Label("连通与播放测试", systemImage: "checkmark.circle").font(.subheadline.bold())
             HStack {
-                Button("UDP 双向检验") { if let port = UInt16(resultPort) { responder.testUDP(host: linuxHost, port: port) } }
+                Button {
+                    if let port = UInt16(resultPort) { responder.testUDP(host: linuxHost, port: port) }
+                } label: {
+                    Label(udpTestButtonTitle, systemImage: udpTestButtonIcon)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(udpTestButtonColor)
+                .disabled(responder.isRunning || responder.isTestingC2 || responder.udpTestState == .testing)
                 Button("TEST C2 单次") { responder.testC2Once(probes.c2) }
-            }.buttonStyle(.bordered).disabled(responder.isRunning || responder.isTestingC2)
+                    .buttonStyle(.bordered).disabled(responder.isRunning || responder.isTestingC2)
+            }
+            Text("UDP：\(responder.udpTestSummary)；只表示网络往返，不代表本轮声学质量或 ToF 成功。")
+                .font(.caption2).foregroundStyle(udpTestButtonColor)
             Button("TEST C2 ×20 稳定性") { responder.testC2Repeated(probes.c2) }
                 .buttonStyle(.bordered).disabled(responder.isRunning || responder.isTestingC2)
             if !responder.c2TestProgress.isEmpty {
@@ -244,7 +274,7 @@ struct ContentView: View {
     private var metricsCard: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack { Label("会话指标", systemImage: "gauge.with.dots.needle.67percent").font(.subheadline.bold()); Spacer(); Text(responder.stateName).font(.caption.monospaced()).foregroundStyle(.green) }
-            Text("iOS 本地 session：\(responder.localSessionID ?? "--")\nLinux session：\(responder.pairedLinuxSessionID ?? "--（等待 ARM）")\nmeasurement=\(responder.activeMeasurement.map { String($0) } ?? "--") | pending ARM=\(responder.pendingArmMeasurement.map { String($0) } ?? "--")\n成功=\(responder.successfulResponses) | C1 未通过=\(responder.c1Rejected) | C2 失败=\(responder.c2Failures) | UDP 失败=\(responder.udpFailures)\nreply_delay_samples=\(responder.lastReplyDelaySamples.map { String($0) } ?? "--") | t3_precise=\(responder.lastT3Precise)\ninput=\(responder.inputRoute)\noutput=\(responder.outputRoute)")
+            Text("iOS 本地 session：\(responder.localSessionID ?? "--")\nLinux session：\(responder.pairedLinuxSessionID ?? "--（等待 ARM）")\nmeasurement=\(responder.activeMeasurement.map { String($0) } ?? "--") | pending ARM=\(responder.pendingArmMeasurement.map { String($0) } ?? "--")\n成功=\(responder.successfulResponses) | C1 未通过=\(responder.c1Rejected) | C2 失败=\(responder.c2Failures) | UDP 失败=\(responder.udpFailures)\nLinux质量=\(responder.lastLinuxQuality)\nreply_delay_samples=\(responder.lastReplyDelaySamples.map { String($0) } ?? "--") | t3_precise=\(responder.lastT3Precise)\ninput=\(responder.inputRoute)\noutput=\(responder.outputRoute)")
                 .font(.system(size: 10, design: .monospaced)).textSelection(.enabled)
             HStack {
                 Button(showingLog ? "隐藏诊断日志" : "显示诊断日志") { showingLog.toggle() }
@@ -316,6 +346,70 @@ struct ContentView: View {
     }
     private func coordinate(_ name: String, _ value: Double) -> some View { VStack { Text(name).font(.caption.bold()); Text(String(format: "%+.3f m", value)).font(.caption.monospacedDigit()) }.frame(maxWidth: .infinity).padding(6).background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 7)) }
     private func numberField(_ label: String, _ value: Binding<String>) -> some View { VStack { Text(label).font(.caption2); TextField("0", text: value).keyboardType(.numbersAndPunctuation).multilineTextAlignment(.center).fieldStyle() }.frame(maxWidth: .infinity) }
+    private var udpTestButtonTitle: String {
+        switch responder.udpTestState {
+        case .idle: return "UDP 双向检验"
+        case .testing: return "UDP 检验中"
+        case .passed: return "UDP 检验成功"
+        case .failed: return "UDP 检验失败"
+        }
+    }
+    private var udpTestButtonIcon: String {
+        switch responder.udpTestState {
+        case .idle: return "arrow.left.arrow.right"
+        case .testing: return "hourglass"
+        case .passed: return "checkmark.circle.fill"
+        case .failed: return "xmark.circle.fill"
+        }
+    }
+    private var udpTestButtonColor: Color {
+        switch responder.udpTestState {
+        case .idle: return .blue
+        case .testing: return .orange
+        case .passed: return .green
+        case .failed: return .red
+        }
+    }
+}
+
+private final class DeviceThermalMonitor: ObservableObject {
+    @Published private(set) var state = ProcessInfo.processInfo.thermalState
+    private var token: NSObjectProtocol?
+
+    init() {
+        _ = ProcessInfo.processInfo.thermalState
+        token = NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification,
+            object: ProcessInfo.processInfo,
+            queue: .main
+        ) { [weak self] _ in
+            self?.state = ProcessInfo.processInfo.thermalState
+        }
+    }
+
+    deinit {
+        if let token { NotificationCenter.default.removeObserver(token) }
+    }
+
+    var label: String {
+        switch state {
+        case .nominal: return "正常"
+        case .fair: return "偏热"
+        case .serious: return "过热，建议暂停"
+        case .critical: return "严重过热，请停止并冷却"
+        @unknown default: return "未知"
+        }
+    }
+
+    var color: Color {
+        switch state {
+        case .nominal: return .green
+        case .fair: return .yellow
+        case .serious: return .orange
+        case .critical: return .red
+        @unknown default: return .gray
+        }
+    }
 }
 
 private struct XYHeadingView: View {

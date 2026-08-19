@@ -96,6 +96,18 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         controlServer = nil
     }
 
+    func disableIdleRemoteStart() {
+        idleListenerEnabled = false
+        preparedConfiguration = nil
+        stateLock.lock(); let running = runningValue; stateLock.unlock()
+        guard !running else { return }
+        controlServer?.stop()
+        controlServer = nil
+        DispatchQueue.main.async {
+            self.status = "空闲远程启动已关闭；可在本机手动开始 STRICT ARM 会话"
+        }
+    }
+
     func shutdown() {
         idleListenerEnabled = false
         stateLock.lock(); let running = runningValue; stateLock.unlock()

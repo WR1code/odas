@@ -1,4 +1,19 @@
-# AV-Twin iPhone Responder v0.13.0
+# AV-Twin iPhone Responder v0.13.1
+
+## 本次界面修复
+
+- 热点地址固定从 `bridge100` 读取，不再把蜂窝接口 `pdp_ip0` 显示成 iPhone Wi-Fi/热点地址。
+- Linux ARM/远程启停目标显示用户填写的 Linux 地址，而不是 iPhone 本机地址。
+- ARKit 相机改为位姿坐标下方的独立预览，不再作为整个页面背景。
+- 新增初始 `+Z` 坐标系和当前 yaw 朝向偏差箭头。
+- C1/C2 模块新增 0–24 kHz 频谱缩略图，选择 WAV 后随探针更新。
+
+## v0.13.1 修复
+
+- 修复 C1/C2/结果目录分别叠加多个 `fileImporter` 时，iPhone 上按钮看似可用但文件选择器可能不弹出的情况；现在统一使用一个文件选择入口。
+- 新增“允许 Linux 在空闲时远程启动 iPhone 会话”开关；关闭后不会在空闲状态监听 `START_CAPTURE`，但仍可在 iPhone 上手动开始 STRICT ARM 会话。
+- 文件选择按钮增加状态提示，便于判断点击事件是否已触发。
+
 
 面向 iPhone 15 Pro Max / iOS 17 的原生 SwiftUI + AVFoundation + ARKit 工程。当前功能已对齐 Android `v0.12.0-remote-safe-stop`，并增加 iPhone LiDAR/ARKit 自动位姿和由 iPhone 命令 Linux 立即插入一轮采集。
 
@@ -36,14 +51,14 @@
 4. 首次启动允许相机、麦克风和本地网络权限。
 5. 填写 Linux Wi-Fi IPv4，默认 iPhone control `5006`、Linux result `5005`。
 6. 先运行 UDP 双向检验和 C2 ×20，再启动 STRICT ARM 会话。
-7. Linux 端把 ARM 发到界面显示的 `iPhone Wi-Fi IPv4:5006`。
+7. Linux 端把 ARM 发到界面显示的 `iPhone 热点 IPv4:5006`。
 
 ## GitHub Actions 构建 IPA
 
 `.github/workflows/build-avtwin-ios.yml` 在 `macos-15` 上用 Xcode 编译：
 
-- PR 或手动运行且 `sign_ipa=false`：生成 `AVTwinIOSResponder-v0.13.0-unsigned.ipa`。它用于验证和后续重签，不能直接装到普通未越狱 iPhone。
-- 手动运行且 `sign_ipa=true`：导入你自己的证书和 Provisioning Profile，生成可安装的 `AVTwinIOSResponder-v0.13.0-signed.ipa`。
+- PR 或手动运行且 `sign_ipa=false`：生成 `AVTwinIOSResponder-v0.13.1-unsigned.ipa`。它用于验证和后续重签，不能直接装到普通未越狱 iPhone。
+- 手动运行且 `sign_ipa=true`：导入你自己的证书和 Provisioning Profile，生成可安装的 `AVTwinIOSResponder-v0.13.1-signed.ipa`。
 
 已签名模式需要在 GitHub 仓库配置以下 Actions Secrets：
 

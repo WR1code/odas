@@ -12,15 +12,16 @@ struct ContentView: View {
     @AppStorage("controlPort") private var controlPort = "5006"
     @AppStorage("resultPort") private var resultPort = "5005"
     @AppStorage("saveDebugAudio") private var saveDebugAudio = false
+    @AppStorage("linuxRemoteStartEnabled") private var linuxRemoteStartEnabled = true
     @AppStorage("manualX") private var manualX = "0"
     @AppStorage("manualY") private var manualY = "0"
     @AppStorage("manualZ") private var manualZ = "0"
     @AppStorage("manualYaw") private var manualYaw = "0"
     @AppStorage("manualPitch") private var manualPitch = "0"
     @AppStorage("manualRoll") private var manualRoll = "0"
-    @State private var importingC1 = false
-    @State private var importingC2 = false
-    @State private var importingFolder = false
+    @State private var importTarget: FileImportTarget = .c1
+    @State private var isImportingFile = false
+    @State private var importStatus: String?
     @State private var showingLog = false
     @State private var localIPv4 = "unavailable"
 
@@ -33,8 +34,8 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            ARCameraView(poseTracker: poseTracker).ignoresSafeArea()
-            LinearGradient(colors: [.black.opacity(0.35), .black.opacity(0.88)], startPoint: .top, endPoint: .bottom).ignoresSafeArea()
+            LinearGradient(colors: [Color(uiColor: .systemBackground), Color(uiColor: .secondarySystemBackground)], startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
             ScrollView {
                 VStack(spacing: 12) {
                     headerCard
@@ -51,19 +52,13 @@ struct ContentView: View {
             }
         }
         .onAppear {
-            localIPv4 = LocalNetworkInfo.preferredIPv4()
+            localIPv4 = LocalNetworkInfo.hotspotIPv4()
             configureIdleListener()
         }
         .onChange(of: idleConfigurationKey) { _, _ in configureIdleListener() }
         .onDisappear { responder.shutdown() }
-        .fileImporter(isPresented: $importingC1, allowedContentTypes: [.wav, .audio]) { result in
-            if case let .success(url) = result { probes.select(url, for: .c1) }
-        }
-        .fileImporter(isPresented: $importingC2, allowedContentTypes: [.wav, .audio]) { result in
-            if case let .success(url) = result { probes.select(url, for: .c2) }
-        }
-        .fileImporter(isPresented: $importingFolder, allowedContentTypes: [.folder]) { result in
-            if case let .success(url) = result { try? folder.select(url) }
+        .fileImporter(isPresented: $isImportingFile, allowedContentTypes: importTarget.allowedContentTypes) { result in
+            handleImportResult(result, target: importTarget)
         }
     }
 
@@ -72,7 +67,7 @@ struct ContentView: View {
             Image(systemName: responder.isRunning ? "wave.3.right.circle.fill" : "iphone.gen3")
                 .font(.system(size: 34)).foregroundStyle(responder.isRunning ? .green : .cyan)
             VStack(alignment: .leading, spacing: 3) {
-                Text("AV-Twin iOS Responder v0.13.0").font(.headline)
+                Text("AV-Twin iOS Responder v0.13.1").font(.headline)
                 Text("与 Android v0.12 对齐：远程启停、声学 t3、STRICT ARM").font(.caption2).foregroundStyle(.secondary)
                 Text(responder.status).font(.caption).foregroundStyle(.secondary)
             }
@@ -84,10 +79,11 @@ struct ContentView: View {
     private var probeCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Label("C1 / C2 声学探针", systemImage: "waveform").font(.subheadline.bold())
-            probeRow(title: "C1", probe: probes.c1, select: { importingC1 = true }, reset: { probes.useDefault(.c1) })
+            probeRow(title: "C1", probe: probes.c1, select: { beginImport(.c1) }, reset: { probes.useDefault(.c1) })
             Divider()
-            probeRow(title: "C2", probe: probes.c2, select: { importingC2 = true }, reset: { probes.useDefault(.c2) })
+            probeRow(title: "C2", probe: probes.c2, select: { beginImport(.c2) }, reset: { probes.useDefault(.c2) })
             if let error = probes.lastError { Text("WAV 错误：\(error)").font(.caption).foregroundStyle(.red) }
+            if let importStatus { Text(importStatus).font(.caption2).foregroundStyle(.secondary) }
         }.disabled(responder.isRunning || responder.isTestingC2).card()
     }
 
@@ -95,6 +91,8 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("\(title): \(probe.summary)").font(.caption)
             Text(probe.diagnostics).font(.system(size: 9, design: .monospaced)).textSelection(.enabled).foregroundStyle(.secondary)
+            ProbeSpectrumView(bins: probe.spectrumBins, tint: title == "C1" ? .cyan : .orange)
+                .frame(height: 76)
             HStack {
                 Button("选择 \(title) WAV", action: select).buttonStyle(.bordered)
                 Button("恢复默认", action: reset).buttonStyle(.bordered)
@@ -114,6 +112,15 @@ struct ContentView: View {
                 HStack { coordinate("X", pose.position.x); coordinate("Y", pose.position.y); coordinate("Z", pose.position.z) }
                 Text(String(format: "yaw %.1f°  pitch %.1f°  roll %.1f° | %@", pose.yawDegrees, pose.pitchDegrees, pose.rollDegrees, poseTracker.statusText))
                     .font(.caption.monospacedDigit())
+                HeadingDeviationView(yawDegrees: pose.yawDegrees)
+                    .frame(height: 150)
+                VStack(alignment: .leading, spacing: 5) {
+                    Label("相机预览", systemImage: "camera.fill").font(.caption.bold())
+                    ARCameraView(poseTracker: poseTracker)
+                        .frame(height: 190)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay { RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.18)) }
+                }
                 Button { poseTracker.resetOrigin() } label: { Label("将当前位置设为原点", systemImage: "scope").frame(maxWidth: .infinity) }
                     .buttonStyle(.bordered).disabled(pose.trackingState != "tracking")
             } else {
@@ -133,13 +140,17 @@ struct ContentView: View {
     private var networkCard: some View {
         VStack(alignment: .leading, spacing: 9) {
             Label("Wi-Fi / UDP", systemImage: "network").font(.subheadline.bold())
-            Text("iPhone Wi-Fi IPv4：\(localIPv4)\nLinux ARM/远程启停目标：\(localIPv4):\(controlPort)\n接口：\(LocalNetworkInfo.display())")
+            Text("iPhone 热点 IPv4：\(localIPv4)\nLinux ARM/远程启停目标：\(linuxHost):\(controlPort)\n接口：\(LocalNetworkInfo.display())")
                 .font(.caption.monospaced()).textSelection(.enabled)
             TextField("Linux Wi-Fi IPv4", text: $linuxHost).keyboardType(.numbersAndPunctuation).fieldStyle()
             HStack {
                 TextField("iPhone ARM 端口", text: $controlPort).keyboardType(.numberPad).fieldStyle()
                 TextField("Linux 结果端口", text: $resultPort).keyboardType(.numberPad).fieldStyle()
             }
+            Toggle("允许 Linux 在空闲时远程启动 iPhone 会话", isOn: $linuxRemoteStartEnabled)
+                .font(.caption)
+            Text(linuxRemoteStartEnabled ? "已开启：空闲时监听控制端口，Linux 可发送 START_CAPTURE。" : "已关闭：空闲时不监听远程启动；仍可在本机手动开始会话。")
+                .font(.caption2).foregroundStyle(.secondary)
         }.disabled(responder.isRunning).card()
     }
 
@@ -148,7 +159,7 @@ struct ContentView: View {
             Label("结果保存", systemImage: "folder").font(.subheadline.bold())
             Text(folder.status).font(.caption).foregroundStyle(.secondary)
             HStack {
-                Button("选择结果目录") { importingFolder = true }.buttonStyle(.bordered)
+                Button("选择结果目录") { beginImport(.folder) }.buttonStyle(.bordered)
                 Button("使用 App 默认目录") { folder.clear() }.buttonStyle(.bordered)
             }
             Toggle("保存调试音频（C1 窗口和 C2 参考）", isOn: $saveDebugAudio).font(.caption)
@@ -212,7 +223,7 @@ struct ContentView: View {
     private var configurationValid: Bool { !linuxHost.isEmpty && UInt16(controlPort) != nil && UInt16(resultPort) != nil }
     private var idleConfigurationKey: String {
         [linuxHost, controlPort, resultPort, folder.selectedURL?.path ?? "default", probes.c1.internalPCMSHA256,
-         probes.c2.internalPCMSHA256, saveDebugAudio.description].joined(separator: "|")
+         probes.c2.internalPCMSHA256, saveDebugAudio.description, linuxRemoteStartEnabled.description].joined(separator: "|")
     }
     private func currentConfiguration() -> ResponderConfiguration? {
         guard let control = UInt16(controlPort), let result = UInt16(resultPort), !linuxHost.isEmpty else { return nil }
@@ -222,11 +233,43 @@ struct ContentView: View {
         )
     }
     private func configureIdleListener() {
+        guard linuxRemoteStartEnabled else {
+            responder.disableIdleRemoteStart()
+            return
+        }
         guard let config = currentConfiguration() else {
             responder.clearIdleConfiguration()
             return
         }
         responder.configureIdle(config)
+    }
+    private func beginImport(_ target: FileImportTarget) {
+        importTarget = target
+        importStatus = "正在打开\(target.displayName)…"
+        // Present on the next main-loop turn so SwiftUI first applies the target's allowedContentTypes.
+        DispatchQueue.main.async { isImportingFile = true }
+    }
+    private func handleImportResult(_ result: Result<URL, Error>, target: FileImportTarget) {
+        switch result {
+        case .success(let url):
+            switch target {
+            case .c1:
+                probes.select(url, for: .c1)
+                importStatus = probes.lastError == nil ? "已选择 C1：\(url.lastPathComponent)" : "C1 导入失败"
+            case .c2:
+                probes.select(url, for: .c2)
+                importStatus = probes.lastError == nil ? "已选择 C2：\(url.lastPathComponent)" : "C2 导入失败"
+            case .folder:
+                do {
+                    try folder.select(url)
+                    importStatus = "已选择结果目录：\(url.lastPathComponent)"
+                } catch {
+                    importStatus = "结果目录选择失败：\(error.localizedDescription)"
+                }
+            }
+        case .failure(let error):
+            importStatus = "文件选择未完成：\(error.localizedDescription)"
+        }
     }
     private func startSession() {
         guard let config = currentConfiguration() else { return }
@@ -234,6 +277,95 @@ struct ContentView: View {
     }
     private func coordinate(_ name: String, _ value: Double) -> some View { VStack { Text(name).font(.caption.bold()); Text(String(format: "%+.3f m", value)).font(.caption.monospacedDigit()) }.frame(maxWidth: .infinity).padding(6).background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 7)) }
     private func numberField(_ label: String, _ value: Binding<String>) -> some View { VStack { Text(label).font(.caption2); TextField("0", text: value).keyboardType(.numbersAndPunctuation).multilineTextAlignment(.center).fieldStyle() }.frame(maxWidth: .infinity) }
+}
+
+private struct HeadingDeviationView: View {
+    let yawDegrees: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("初始坐标系 / 当前朝向偏差").font(.caption.bold())
+                Spacer()
+                Text(String(format: "%+.1f°", yawDegrees)).font(.caption.monospacedDigit()).foregroundStyle(.cyan)
+            }
+            Canvas { context, size in
+                let center = CGPoint(x: size.width / 2, y: size.height / 2 + 5)
+                let radius = min(size.width, size.height) * 0.38
+                var axes = Path()
+                axes.move(to: CGPoint(x: center.x - radius, y: center.y))
+                axes.addLine(to: CGPoint(x: center.x + radius, y: center.y))
+                axes.move(to: CGPoint(x: center.x, y: center.y + radius))
+                axes.addLine(to: CGPoint(x: center.x, y: center.y - radius))
+                context.stroke(axes, with: .color(.secondary.opacity(0.55)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+
+                let radians = yawDegrees * .pi / 180
+                let tip = CGPoint(x: center.x + sin(radians) * radius, y: center.y - cos(radians) * radius)
+                var arrow = Path()
+                arrow.move(to: center)
+                arrow.addLine(to: tip)
+                let wing = 9.0
+                let angle = atan2(tip.y - center.y, tip.x - center.x)
+                arrow.move(to: tip)
+                arrow.addLine(to: CGPoint(x: tip.x - wing * cos(angle - .pi / 6), y: tip.y - wing * sin(angle - .pi / 6)))
+                arrow.move(to: tip)
+                arrow.addLine(to: CGPoint(x: tip.x - wing * cos(angle + .pi / 6), y: tip.y - wing * sin(angle + .pi / 6)))
+                context.stroke(arrow, with: .color(.cyan), style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+
+                context.draw(Text("+Z 初始前方").font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: center.x, y: 8), anchor: .top)
+                context.draw(Text("+X").font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: center.x + radius + 6, y: center.y), anchor: .leading)
+            }
+            .background(.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+}
+
+private struct ProbeSpectrumView: View {
+    let bins: [Float]
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Canvas { context, size in
+                guard bins.count > 1 else { return }
+                var fill = Path()
+                fill.move(to: CGPoint(x: 0, y: size.height))
+                for (index, magnitude) in bins.enumerated() {
+                    let x = CGFloat(index) / CGFloat(bins.count - 1) * size.width
+                    let y = size.height * (1 - CGFloat(magnitude))
+                    fill.addLine(to: CGPoint(x: x, y: y))
+                }
+                fill.addLine(to: CGPoint(x: size.width, y: size.height))
+                fill.closeSubpath()
+                context.fill(fill, with: .linearGradient(Gradient(colors: [tint.opacity(0.75), tint.opacity(0.08)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: size.height)))
+                context.stroke(fill, with: .color(tint), lineWidth: 1.2)
+            }
+            HStack { Text("0"); Spacer(); Text("频谱"); Spacer(); Text("24 kHz") }
+                .font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary)
+        }
+        .padding(6)
+        .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityLabel("探针频谱，0 到 24 千赫")
+    }
+}
+
+private enum FileImportTarget {
+    case c1, c2, folder
+
+    var allowedContentTypes: [UTType] {
+        switch self {
+        case .c1, .c2: return [.wav, .audio]
+        case .folder: return [.folder]
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .c1: return " C1 WAV 选择器"
+        case .c2: return " C2 WAV 选择器"
+        case .folder: return "结果目录选择器"
+        }
+    }
 }
 
 private extension View {

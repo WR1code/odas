@@ -4,6 +4,7 @@ import Foundation
 
 struct ProbeDefinition: Sendable {
     let samples: [Float]
+    let spectrumBins: [Float]
     let name: String
     let isBuiltIn: Bool
     let originalSampleRate: Int
@@ -48,7 +49,7 @@ enum ProbeDefaults {
         let pcm = PCM16.encode(samples)
         let hash = SHA256.hex(pcm)
         return ProbeDefinition(
-            samples: samples, name: name, isBuiltIn: true,
+            samples: samples, spectrumBins: ProbeSpectrum.normalizedBins(samples), name: name, isBuiltIn: true,
             originalSampleRate: Int(sampleRate), originalChannels: 1,
             sourceChannel: "BUILT_IN_MONO", leftPeak: 0, rightPeak: 0,
             sourceSHA256: hash, internalPCMSHA256: hash, sourceURLDescription: nil
@@ -169,7 +170,7 @@ enum WavProbeLoader {
         guard duration >= 0.020 else { throw error("探针短于 20 ms") }
         guard duration <= 2.0 else { throw error("探针长于 2 s") }
         return ProbeDefinition(
-            samples: internalSamples, name: name, isBuiltIn: false,
+            samples: internalSamples, spectrumBins: ProbeSpectrum.normalizedBins(internalSamples), name: name, isBuiltIn: false,
             originalSampleRate: sampleRate, originalChannels: channels,
             sourceChannel: channels >= 2 ? "RIGHT" : "MONO",
             leftPeak: leftPeak, rightPeak: rightPeak,
@@ -220,6 +221,37 @@ enum WavProbeLoader {
     }
     private static func error(_ message: String) -> NSError {
         NSError(domain: "AVTwin.WAV", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+    }
+}
+
+/// Small, precomputed frequency overview for the probe picker. Keeping this on
+/// ProbeDefinition avoids recalculating an FFT-like preview for every AR frame.
+enum ProbeSpectrum {
+    static func normalizedBins(_ samples: [Float], count: Int = 72) -> [Float] {
+        guard !samples.isEmpty, count > 0 else { return [] }
+        let analysisCount = min(samples.count, 8_192)
+        let window = samples.prefix(analysisCount).enumerated().map { index, sample in
+            let hann = analysisCount > 1 ? 0.5 - 0.5 * cos(2 * .pi * Double(index) / Double(analysisCount - 1)) : 1
+            return Double(sample) * hann
+        }
+        let values = (0..<count).map { bin -> Double in
+            // Cover 0...24 kHz uniformly. A direct DFT is sufficient for this
+            // deliberately tiny preview and runs only when a probe is loaded.
+            let frequencyIndex = Double(bin + 1) * Double(analysisCount / 2) / Double(count)
+            var real = 0.0, imaginary = 0.0
+            for (sampleIndex, sample) in window.enumerated() {
+                let phase = 2 * Double.pi * frequencyIndex * Double(sampleIndex) / Double(analysisCount)
+                real += sample * cos(phase)
+                imaginary -= sample * sin(phase)
+            }
+            return log10(max(1e-9, hypot(real, imaginary)))
+        }
+        guard let high = values.max() else {
+            return Array(repeating: 0, count: count)
+        }
+        // `values` are log10 amplitudes; four decades gives an 80 dB display
+        // range and prevents numerical noise from filling the whole graph.
+        return values.map { Float((($0 - (high - 4)) / 4).clamped(to: 0...1)) }
     }
 }
 

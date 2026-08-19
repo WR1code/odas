@@ -138,14 +138,13 @@ struct ContentView: View {
                     .frame(height: 230)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay { RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.18)) }
-                    Button {
-                        visualOriginRevision += 1
-                    } label: {
-                        Label("在视野中央重设可视原点", systemImage: "arkit").frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
                 }
-                Button { poseTracker.resetOrigin() } label: { Label("将当前位置设为原点", systemImage: "scope").frame(maxWidth: .infinity) }
+                Button {
+                    poseTracker.resetOrigin()
+                    visualOriginRevision += 1
+                } label: {
+                    Label("同时设立坐标原点与 AR 可视原点", systemImage: "scope").frame(maxWidth: .infinity)
+                }
                     .buttonStyle(.bordered).disabled(pose.trackingState != "tracking")
             } else {
                 HStack { numberField("X m", $manualX); numberField("Y m", $manualY); numberField("Z m", $manualZ) }
@@ -323,7 +322,9 @@ private struct XYHeadingView: View {
                 axes.addLine(to: CGPoint(x: center.x, y: center.y - radius))
                 context.stroke(axes, with: .color(.secondary.opacity(0.55)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
 
-                let radians = yawDegrees * .pi / 180
+                // The device yaw increases opposite to the screen-space XY
+                // rotation, so reverse it for an intuitive live arrow.
+                let radians = -yawDegrees * .pi / 180
                 let tip = CGPoint(x: center.x + sin(radians) * radius, y: center.y - cos(radians) * radius)
                 var arrow = Path()
                 arrow.move(to: center)
@@ -365,7 +366,9 @@ private struct PhoneLevelView: View {
                 context.stroke(horizon, with: .color(.secondary.opacity(0.7)), style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
 
                 let clampedPitch = CGFloat(max(-85.0, min(85.0, pitchDegrees)))
-                let angle: CGFloat = -clampedPitch * .pi / 180
+                // Reverse the previous screen-space pitch mapping so the live
+                // arrow follows the observed device tilt direction.
+                let angle: CGFloat = clampedPitch * .pi / 180
                 let origin = CGPoint(x: size.width * 0.30, y: baselineY)
                 let length = min(size.width * 0.48, size.height * 0.68)
                 let tip = CGPoint(x: origin.x + cos(angle) * length, y: origin.y + sin(angle) * length)

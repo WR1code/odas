@@ -304,12 +304,12 @@ private struct HeadingDeviationView: View {
                 var arrow = Path()
                 arrow.move(to: center)
                 arrow.addLine(to: tip)
-                let wing = 9.0
-                let angle = atan2(tip.y - center.y, tip.x - center.x)
+                let wing: CGFloat = 9
+                let angle: CGFloat = atan2(tip.y - center.y, tip.x - center.x)
                 arrow.move(to: tip)
-                arrow.addLine(to: CGPoint(x: tip.x - wing * cos(angle - .pi / 6), y: tip.y - wing * sin(angle - .pi / 6)))
+                arrow.addLine(to: CGPoint(x: tip.x - wing * cos(angle - CGFloat.pi / 6), y: tip.y - wing * sin(angle - CGFloat.pi / 6)))
                 arrow.move(to: tip)
-                arrow.addLine(to: CGPoint(x: tip.x - wing * cos(angle + .pi / 6), y: tip.y - wing * sin(angle + .pi / 6)))
+                arrow.addLine(to: CGPoint(x: tip.x - wing * cos(angle + CGFloat.pi / 6), y: tip.y - wing * sin(angle + CGFloat.pi / 6)))
                 context.stroke(arrow, with: .color(.cyan), style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
 
                 context.draw(Text("+Z 初始前方").font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: center.x, y: 8), anchor: .top)

@@ -115,8 +115,8 @@ struct ContentView: View {
                     .font(.caption.monospacedDigit())
                 XYHeadingView(yawDegrees: pose.yawDegrees)
                     .frame(height: 150)
-                PhoneLevelView(pitchDegrees: pose.pitchDegrees, rollDegrees: pose.rollDegrees)
-                    .frame(height: 132)
+                BubbleLevelView(pitchDegrees: pose.pitchDegrees, rollDegrees: pose.rollDegrees)
+                    .frame(height: 205)
                 VStack(alignment: .leading, spacing: 5) {
                     Label("相机预览", systemImage: "camera.fill").font(.caption.bold())
                     ZStack {
@@ -127,7 +127,7 @@ struct ContentView: View {
                             .shadow(radius: 2)
                         VStack {
                             Spacer()
-                            Text("彩色 XYZ 坐标固定在 AR 空间中")
+                            Text("XYZ=重置时手机位置 · 黄线=当前位置到原点")
                                 .font(.caption2)
                                 .padding(.horizontal, 8).padding(.vertical, 4)
                                 .background(.black.opacity(0.55), in: Capsule())
@@ -345,50 +345,56 @@ private struct XYHeadingView: View {
     }
 }
 
-private struct PhoneLevelView: View {
+private struct BubbleLevelView: View {
     let pitchDegrees: Double
     let rollDegrees: Double
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("手机相对水平面").font(.caption.bold())
+                Text("手机水平仪").font(.caption.bold())
                 Spacer()
                 Text(String(format: "俯仰 %+.1f°  横滚 %+.1f°", pitchDegrees, rollDegrees))
-                    .font(.caption2.monospacedDigit()).foregroundStyle(.orange)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(abs(pitchDegrees) < 1 && abs(rollDegrees) < 1 ? .green : .orange)
             }
             Canvas { context, size in
-                let margin: CGFloat = 18
-                let baselineY = size.height * 0.68
-                var horizon = Path()
-                horizon.move(to: CGPoint(x: margin, y: baselineY))
-                horizon.addLine(to: CGPoint(x: size.width - margin, y: baselineY))
-                context.stroke(horizon, with: .color(.secondary.opacity(0.7)), style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+                let center = CGPoint(x: size.width / 2, y: size.height / 2 + 5)
+                let radius = min(size.width, size.height) * 0.39
+                let outer = Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
+                context.fill(outer, with: .color(.green.opacity(0.08)))
+                context.stroke(outer, with: .color(.green.opacity(0.65)), lineWidth: 2)
 
-                let clampedPitch = CGFloat(max(-85.0, min(85.0, pitchDegrees)))
-                // Reverse the previous screen-space pitch mapping so the live
-                // arrow follows the observed device tilt direction.
-                let angle: CGFloat = clampedPitch * .pi / 180
-                let origin = CGPoint(x: size.width * 0.30, y: baselineY)
-                let length = min(size.width * 0.48, size.height * 0.68)
-                let tip = CGPoint(x: origin.x + cos(angle) * length, y: origin.y + sin(angle) * length)
-                var phone = Path()
-                phone.move(to: origin)
-                phone.addLine(to: tip)
-                context.stroke(phone, with: .color(.orange), style: StrokeStyle(lineWidth: 7, lineCap: .round))
+                for fraction in [0.33, 0.66] as [CGFloat] {
+                    let ringRadius = radius * fraction
+                    let ring = Path(ellipseIn: CGRect(x: center.x - ringRadius, y: center.y - ringRadius, width: ringRadius * 2, height: ringRadius * 2))
+                    context.stroke(ring, with: .color(.secondary.opacity(0.35)), lineWidth: 1)
+                }
+                var crosshair = Path()
+                crosshair.move(to: CGPoint(x: center.x - radius, y: center.y))
+                crosshair.addLine(to: CGPoint(x: center.x + radius, y: center.y))
+                crosshair.move(to: CGPoint(x: center.x, y: center.y - radius))
+                crosshair.addLine(to: CGPoint(x: center.x, y: center.y + radius))
+                context.stroke(crosshair, with: .color(.secondary.opacity(0.4)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
 
-                let direction: CGFloat = atan2(tip.y - origin.y, tip.x - origin.x)
-                let wing: CGFloat = 10
-                var arrow = Path()
-                arrow.move(to: tip)
-                arrow.addLine(to: CGPoint(x: tip.x - wing * cos(direction - CGFloat.pi / 5), y: tip.y - wing * sin(direction - CGFloat.pi / 5)))
-                arrow.move(to: tip)
-                arrow.addLine(to: CGPoint(x: tip.x - wing * cos(direction + CGFloat.pi / 5), y: tip.y - wing * sin(direction + CGFloat.pi / 5)))
-                context.stroke(arrow, with: .color(.orange), style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                context.draw(Text("水平 0°").font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: size.width - margin, y: baselineY + 5), anchor: .topTrailing)
-                context.draw(Text("手机前方").font(.caption2).foregroundStyle(.orange), at: tip, anchor: .bottom)
+                let maxTilt = 30.0
+                let normalizedRoll = CGFloat(max(-1, min(1, rollDegrees / maxTilt)))
+                let normalizedPitch = CGFloat(max(-1, min(1, pitchDegrees / maxTilt)))
+                let dot = CGPoint(x: center.x + normalizedRoll * radius, y: center.y + normalizedPitch * radius)
+                let isLevel = abs(pitchDegrees) < 1 && abs(rollDegrees) < 1
+                let centerMark = Path(ellipseIn: CGRect(x: center.x - 7, y: center.y - 7, width: 14, height: 14))
+                context.fill(centerMark, with: .color(.green.opacity(0.8)))
+                context.stroke(centerMark, with: .color(.white), lineWidth: 1.5)
+                let currentMark = Path(ellipseIn: CGRect(x: dot.x - 10, y: dot.y - 10, width: 20, height: 20))
+                context.fill(currentMark, with: .color(isLevel ? .green : .orange))
+                context.stroke(currentMark, with: .color(.white), lineWidth: 2)
+
+                context.draw(Text("水平中心").font(.caption2.bold()).foregroundStyle(.green), at: CGPoint(x: center.x, y: center.y + 12), anchor: .top)
+                context.draw(Text("当前倾斜点").font(.caption2.bold()).foregroundStyle(isLevel ? .green : .orange), at: CGPoint(x: dot.x, y: dot.y - 13), anchor: .bottom)
             }
             .background(.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+            Text("当前倾斜点与水平中心重合时，手机处于水平状态（±1°）。圆周表示约 30° 倾斜。")
+                .font(.caption2).foregroundStyle(.secondary)
         }
     }
 }

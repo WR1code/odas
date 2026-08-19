@@ -10,19 +10,22 @@ struct ARCameraView: UIViewRepresentable {
     func makeUIView(context: Context) -> ARSCNView {
         let view = ARSCNView(frame: .zero)
         view.session.delegate = poseTracker
+        view.delegate = context.coordinator
         view.automaticallyUpdatesLighting = true
         view.rendersCameraGrain = true
         view.scene.rootNode.addChildNode(context.coordinator.originNode)
-        context.coordinator.placeOrigin(in: view)
+        view.scene.rootNode.addChildNode(context.coordinator.connectorNode)
+        view.scene.rootNode.addChildNode(context.coordinator.distanceNode)
         context.coordinator.lastRevision = visualOriginRevision
         startTracking(on: view)
+        context.coordinator.pendingInitialPlacement = true
         return view
     }
 
     func updateUIView(_ uiView: ARSCNView, context: Context) {
         guard context.coordinator.lastRevision != visualOriginRevision else { return }
         context.coordinator.lastRevision = visualOriginRevision
-        context.coordinator.placeOrigin(in: uiView)
+        context.coordinator.placeOriginAtCamera(in: uiView)
     }
 
     static func dismantleUIView(_ uiView: ARSCNView, coordinator: Coordinator) {
@@ -39,26 +42,71 @@ struct ARCameraView: UIViewRepresentable {
         view.session.run(configuration, options: [.resetTracking, .removeExistingAnchors])
     }
 
-    final class Coordinator {
+    final class Coordinator: NSObject, ARSCNViewDelegate {
         fileprivate let originNode = ARCoordinateOriginNode()
+        let connectorNode: SCNNode = {
+            let cylinder = SCNCylinder(radius: 0.004, height: 0.001)
+            cylinder.firstMaterial?.diffuse.contents = UIColor.systemYellow
+            cylinder.firstMaterial?.emission.contents = UIColor.systemYellow.withAlphaComponent(0.35)
+            return SCNNode(geometry: cylinder)
+        }()
+        let distanceNode: SCNNode = {
+            let geometry = SCNText(string: "0.000 m", extrusionDepth: 0.1)
+            geometry.font = .boldSystemFont(ofSize: 8)
+            geometry.firstMaterial?.diffuse.contents = UIColor.systemYellow
+            let node = SCNNode(geometry: geometry)
+            node.scale = SCNVector3(0.006, 0.006, 0.006)
+            node.constraints = [SCNBillboardConstraint()]
+            return node
+        }()
         var lastRevision = 0
+        var pendingInitialPlacement = false
+        private var originPosition = SIMD3<Float>.zero
+        private var hasOrigin = false
 
-        func placeOrigin(in view: ARSCNView) {
-            if let transform = view.session.currentFrame?.camera.transform {
-                let cameraPosition = SIMD3<Float>(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
-                let cameraForward = -SIMD3<Float>(transform.columns.2.x, transform.columns.2.y, transform.columns.2.z)
-                originNode.simdWorldPosition = cameraPosition + cameraForward * 0.9 + SIMD3<Float>(0, -0.18, 0)
-            } else {
-                // ARKit starts with the camera at the world origin looking down -Z.
-                originNode.simdWorldPosition = SIMD3<Float>(0, -0.18, -0.9)
+        func placeOriginAtCamera(in view: ARSCNView) {
+            guard let transform = view.session.currentFrame?.camera.transform else {
+                pendingInitialPlacement = true
+                return
             }
+            originPosition = SIMD3<Float>(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
+            originNode.simdWorldPosition = originPosition
             originNode.simdOrientation = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
+            hasOrigin = true
+            pendingInitialPlacement = false
+        }
+
+        func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
+            guard let view = renderer as? ARSCNView, let transform = view.session.currentFrame?.camera.transform else { return }
+            if pendingInitialPlacement || !hasOrigin { placeOriginAtCamera(in: view) }
+            guard hasOrigin else { return }
+            let cameraPosition = SIMD3<Float>(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
+            updateConnector(from: originPosition, to: cameraPosition)
+        }
+
+        private func updateConnector(from origin: SIMD3<Float>, to current: SIMD3<Float>) {
+            let vector = current - origin
+            let distance = simd_length(vector)
+            let visible = distance >= 0.025
+            connectorNode.isHidden = !visible
+            distanceNode.isHidden = !visible
+            guard visible, let cylinder = connectorNode.geometry as? SCNCylinder else { return }
+
+            cylinder.height = CGFloat(distance)
+            connectorNode.simdWorldPosition = (origin + current) / 2
+            connectorNode.simdOrientation = simd_quatf(from: SIMD3<Float>(0, 1, 0), to: simd_normalize(vector))
+            distanceNode.simdWorldPosition = (origin + current) / 2 + SIMD3<Float>(0, 0.045, 0)
+            if let text = distanceNode.geometry as? SCNText {
+                text.string = String(format: "原点 ↔ 当前 %.3f m", distance)
+                let bounds = text.boundingBox
+                distanceNode.pivot = SCNMatrix4MakeTranslation((bounds.min.x + bounds.max.x) / 2, bounds.min.y, 0)
+            }
         }
     }
 }
 
-/// A world-space origin marker. It is added once and deliberately not attached
-/// to the camera, so it remains at the placed point while the camera moves.
+/// A world-space origin marker placed at the camera's exact AR position when
+/// reset. It is not attached to the camera, so it remains there as the user moves.
 private final class ARCoordinateOriginNode: SCNNode {
     override init() {
         super.init()

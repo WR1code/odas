@@ -24,6 +24,7 @@ struct ContentView: View {
     @State private var importStatus: String?
     @State private var showingLog = false
     @State private var localIPv4 = "unavailable"
+    @State private var visualOriginRevision = 0
 
     init(poseTracker: PoseTracker) {
         self.poseTracker = poseTracker
@@ -41,9 +42,9 @@ struct ContentView: View {
                     headerCard
                     probeCard
                     poseCard
+                    sessionCard
                     networkCard
                     storageCard
-                    sessionCard
                     testCard
                     metricsCard
                     if showingLog { logCard }
@@ -112,14 +113,37 @@ struct ContentView: View {
                 HStack { coordinate("X", pose.position.x); coordinate("Y", pose.position.y); coordinate("Z", pose.position.z) }
                 Text(String(format: "yaw %.1f°  pitch %.1f°  roll %.1f° | %@", pose.yawDegrees, pose.pitchDegrees, pose.rollDegrees, poseTracker.statusText))
                     .font(.caption.monospacedDigit())
-                HeadingDeviationView(yawDegrees: pose.yawDegrees)
+                XYHeadingView(yawDegrees: pose.yawDegrees)
                     .frame(height: 150)
+                PhoneLevelView(pitchDegrees: pose.pitchDegrees, rollDegrees: pose.rollDegrees)
+                    .frame(height: 132)
                 VStack(alignment: .leading, spacing: 5) {
                     Label("相机预览", systemImage: "camera.fill").font(.caption.bold())
-                    ARCameraView(poseTracker: poseTracker)
-                        .frame(height: 190)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .overlay { RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.18)) }
+                    ZStack {
+                        ARCameraView(poseTracker: poseTracker, visualOriginRevision: visualOriginRevision)
+                        Image(systemName: "plus")
+                            .font(.system(size: 22, weight: .light))
+                            .foregroundStyle(.white.opacity(0.8))
+                            .shadow(radius: 2)
+                        VStack {
+                            Spacer()
+                            Text("彩色 XYZ 坐标固定在 AR 空间中")
+                                .font(.caption2)
+                                .padding(.horizontal, 8).padding(.vertical, 4)
+                                .background(.black.opacity(0.55), in: Capsule())
+                                .foregroundStyle(.white)
+                                .padding(.bottom, 8)
+                        }
+                    }
+                    .frame(height: 230)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay { RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.18)) }
+                    Button {
+                        visualOriginRevision += 1
+                    } label: {
+                        Label("在视野中央重设可视原点", systemImage: "arkit").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
                 }
                 Button { poseTracker.resetOrigin() } label: { Label("将当前位置设为原点", systemImage: "scope").frame(maxWidth: .infinity) }
                     .buttonStyle(.bordered).disabled(pose.trackingState != "tracking")
@@ -279,13 +303,13 @@ struct ContentView: View {
     private func numberField(_ label: String, _ value: Binding<String>) -> some View { VStack { Text(label).font(.caption2); TextField("0", text: value).keyboardType(.numbersAndPunctuation).multilineTextAlignment(.center).fieldStyle() }.frame(maxWidth: .infinity) }
 }
 
-private struct HeadingDeviationView: View {
+private struct XYHeadingView: View {
     let yawDegrees: Double
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("初始坐标系 / 当前朝向偏差").font(.caption.bold())
+                Text("XY 坐标系 / 当前平面朝向").font(.caption.bold())
                 Spacer()
                 Text(String(format: "%+.1f°", yawDegrees)).font(.caption.monospacedDigit()).foregroundStyle(.cyan)
             }
@@ -312,8 +336,54 @@ private struct HeadingDeviationView: View {
                 arrow.addLine(to: CGPoint(x: tip.x - wing * cos(angle + CGFloat.pi / 6), y: tip.y - wing * sin(angle + CGFloat.pi / 6)))
                 context.stroke(arrow, with: .color(.cyan), style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
 
-                context.draw(Text("+Z 初始前方").font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: center.x, y: 8), anchor: .top)
+                context.draw(Text("+Y 初始前方").font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: center.x, y: 8), anchor: .top)
                 context.draw(Text("+X").font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: center.x + radius + 6, y: center.y), anchor: .leading)
+            }
+            .background(.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+}
+
+private struct PhoneLevelView: View {
+    let pitchDegrees: Double
+    let rollDegrees: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("手机相对水平面").font(.caption.bold())
+                Spacer()
+                Text(String(format: "俯仰 %+.1f°  横滚 %+.1f°", pitchDegrees, rollDegrees))
+                    .font(.caption2.monospacedDigit()).foregroundStyle(.orange)
+            }
+            Canvas { context, size in
+                let margin: CGFloat = 18
+                let baselineY = size.height * 0.68
+                var horizon = Path()
+                horizon.move(to: CGPoint(x: margin, y: baselineY))
+                horizon.addLine(to: CGPoint(x: size.width - margin, y: baselineY))
+                context.stroke(horizon, with: .color(.secondary.opacity(0.7)), style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+
+                let clampedPitch = CGFloat(max(-85.0, min(85.0, pitchDegrees)))
+                let angle: CGFloat = -clampedPitch * .pi / 180
+                let origin = CGPoint(x: size.width * 0.30, y: baselineY)
+                let length = min(size.width * 0.48, size.height * 0.68)
+                let tip = CGPoint(x: origin.x + cos(angle) * length, y: origin.y + sin(angle) * length)
+                var phone = Path()
+                phone.move(to: origin)
+                phone.addLine(to: tip)
+                context.stroke(phone, with: .color(.orange), style: StrokeStyle(lineWidth: 7, lineCap: .round))
+
+                let direction: CGFloat = atan2(tip.y - origin.y, tip.x - origin.x)
+                let wing: CGFloat = 10
+                var arrow = Path()
+                arrow.move(to: tip)
+                arrow.addLine(to: CGPoint(x: tip.x - wing * cos(direction - CGFloat.pi / 5), y: tip.y - wing * sin(direction - CGFloat.pi / 5)))
+                arrow.move(to: tip)
+                arrow.addLine(to: CGPoint(x: tip.x - wing * cos(direction + CGFloat.pi / 5), y: tip.y - wing * sin(direction + CGFloat.pi / 5)))
+                context.stroke(arrow, with: .color(.orange), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                context.draw(Text("水平 0°").font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: size.width - margin, y: baselineY + 5), anchor: .topTrailing)
+                context.draw(Text("手机前方").font(.caption2).foregroundStyle(.orange), at: tip, anchor: .bottom)
             }
             .background(.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
         }

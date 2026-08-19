@@ -71,7 +71,12 @@ struct ARCameraView: UIViewRepresentable {
             }
             originPosition = SIMD3<Float>(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
             originNode.simdWorldPosition = originPosition
-            originNode.simdOrientation = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
+            let cameraRotation = simd_float3x3(
+                SIMD3<Float>(transform.columns.0.x, transform.columns.0.y, transform.columns.0.z),
+                SIMD3<Float>(transform.columns.1.x, transform.columns.1.y, transform.columns.1.z),
+                SIMD3<Float>(transform.columns.2.x, transform.columns.2.y, transform.columns.2.z)
+            )
+            originNode.simdOrientation = simd_quatf(Self.horizontalFLUBasis(cameraRotation: cameraRotation))
             hasOrigin = true
             pendingInitialPlacement = false
         }
@@ -102,6 +107,16 @@ struct ARCameraView: UIViewRepresentable {
                 distanceNode.pivot = SCNMatrix4MakeTranslation((bounds.min.x + bounds.max.x) / 2, bounds.min.y, 0)
             }
         }
+
+        private static func horizontalFLUBasis(cameraRotation: simd_float3x3) -> simd_float3x3 {
+            let worldUp = SIMD3<Float>(0, 1, 0)
+            var forward = -cameraRotation.columns.2
+            forward.y = 0
+            if simd_length_squared(forward) < 1e-6 { forward = SIMD3<Float>(0, 0, -1) }
+            forward = simd_normalize(forward)
+            let left = simd_normalize(simd_cross(worldUp, forward))
+            return simd_float3x3(forward, left, worldUp)
+        }
     }
 }
 
@@ -110,6 +125,8 @@ struct ARCameraView: UIViewRepresentable {
 private final class ARCoordinateOriginNode: SCNNode {
     override init() {
         super.init()
+        // Geometry is authored in local FLU axes. The node is rotated to the
+        // reset-time horizontal phone heading when the origin is placed.
         addChildNode(Self.axis(length: 0.22, radius: 0.006, color: .systemRed, axis: .x, label: "X"))
         addChildNode(Self.axis(length: 0.22, radius: 0.006, color: .systemGreen, axis: .y, label: "Y"))
         addChildNode(Self.axis(length: 0.22, radius: 0.006, color: .systemBlue, axis: .z, label: "Z"))

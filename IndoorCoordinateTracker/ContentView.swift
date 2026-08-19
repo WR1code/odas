@@ -109,6 +109,8 @@ struct ContentView: View {
                 get: { poseSelection.mode }, set: { poseSelection.setMode($0) }
             )) { ForEach(PoseSourceMode.allCases) { Text($0.rawValue).tag($0) } }
             .pickerStyle(.segmented)
+            Text("世界坐标：重置时手机水平前方为 +X、左侧为 +Y，世界向上为 +Z")
+                .font(.caption2).foregroundStyle(.secondary)
             if poseSelection.mode == .arkit {
                 HStack { coordinate("X", pose.position.x); coordinate("Y", pose.position.y); coordinate("Z", pose.position.z) }
                 Text(String(format: "yaw %.1f°  pitch %.1f°  roll %.1f° | %@", pose.yawDegrees, pose.pitchDegrees, pose.rollDegrees, poseTracker.statusText))
@@ -127,7 +129,7 @@ struct ContentView: View {
                             .shadow(radius: 2)
                         VStack {
                             Spacer()
-                            Text("XYZ=重置时手机位置 · 黄线=当前位置到原点")
+                            Text("红X=前 · 绿Y=左 · 蓝Z=上 · 黄线=原点距离")
                                 .font(.caption2)
                                 .padding(.horizontal, 8).padding(.vertical, 4)
                                 .background(.black.opacity(0.55), in: Capsule())
@@ -322,10 +324,8 @@ private struct XYHeadingView: View {
                 axes.addLine(to: CGPoint(x: center.x, y: center.y - radius))
                 context.stroke(axes, with: .color(.secondary.opacity(0.55)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
 
-                // The device yaw increases opposite to the screen-space XY
-                // rotation, so reverse it for an intuitive live arrow.
-                let radians = -yawDegrees * .pi / 180
-                let tip = CGPoint(x: center.x + sin(radians) * radius, y: center.y - cos(radians) * radius)
+                let radians = yawDegrees * .pi / 180
+                let tip = CGPoint(x: center.x - sin(radians) * radius, y: center.y - cos(radians) * radius)
                 var arrow = Path()
                 arrow.move(to: center)
                 arrow.addLine(to: tip)
@@ -337,8 +337,8 @@ private struct XYHeadingView: View {
                 arrow.addLine(to: CGPoint(x: tip.x - wing * cos(angle + CGFloat.pi / 6), y: tip.y - wing * sin(angle + CGFloat.pi / 6)))
                 context.stroke(arrow, with: .color(.cyan), style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
 
-                context.draw(Text("+Y 初始前方").font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: center.x, y: 8), anchor: .top)
-                context.draw(Text("+X").font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: center.x + radius + 6, y: center.y), anchor: .leading)
+                context.draw(Text("+X 前").font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: center.x, y: 8), anchor: .top)
+                context.draw(Text("+Y 左").font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: center.x - radius - 6, y: center.y), anchor: .trailing)
             }
             .background(.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
         }
@@ -379,7 +379,7 @@ private struct BubbleLevelView: View {
 
                 let maxTilt = 30.0
                 let normalizedRoll = CGFloat(max(-1, min(1, rollDegrees / maxTilt)))
-                let normalizedPitch = CGFloat(max(-1, min(1, pitchDegrees / maxTilt)))
+                let normalizedPitch = CGFloat(max(-1, min(1, -pitchDegrees / maxTilt)))
                 let dot = CGPoint(x: center.x + normalizedRoll * radius, y: center.y + normalizedPitch * radius)
                 let isLevel = abs(pitchDegrees) < 1 && abs(rollDegrees) < 1
                 let centerMark = Path(ellipseIn: CGRect(x: center.x - 7, y: center.y - 7, width: 14, height: 14))

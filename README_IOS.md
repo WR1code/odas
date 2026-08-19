@@ -34,7 +34,7 @@
 - C2 从持续打开的麦克风输入时间线做自声相关，声学检测成功才报告 `t3_precise=true`
 - C1/t2 与 C2/t3 分别冻结接收位姿和发射位姿；回传 Linux 的 Tx 位姿取 C2 发声时刻
 - Linux 定时自动采集运行时，可在 iPhone 点击“命令 Linux 立即采集一次”插入一轮；请求有来源校验、request-id 幂等和 ACK
-- ARKit/LiDAR `sceneDepth` 自动位置与姿态，支持将当前位置设为原点和 +Z 向前
+- ARKit/LiDAR `sceneDepth` 自动位置与姿态，使用 X 朝前、Y 朝左、Z 朝上的 FLU 世界坐标
 - Android 等价的手动 X/Y/Z、Yaw/Pitch/Roll 输入；可在运行中更新
 - C1 接受瞬间冻结所选位姿并写入 JSON/CSV
 - 暂停/继续监听、安全停止、800 ms 最小冷却
@@ -76,7 +76,7 @@ Development 与 Ad Hoc 安装都要求目标 iPhone 的 UDID 已包含在 Profil
 
 ## 坐标与兼容性
 
-ARKit 模式是相对坐标，不是 GPS 经纬度：X 向右、Y 向上、Z 向前，单位米。手动模式使用 Android 相同的 ZYX yaw/pitch/roll 约定。线协议保留 `android_event_id` 和 `android_pose_*` 兼容字段，同时增加 `ios_*` 字段，因此现有 Linux v0.9 不需要改协议解析。
+ARKit 模式是相对坐标，不是 GPS 经纬度：每次重置时，以手机投影到水平面的前方为 +X、左侧为 +Y，世界重力反方向为 +Z，单位米，构成右手 FLU 坐标系。Yaw 绕 +Z 且朝 +Y（左转）为正，Pitch 机头上抬为正，Roll 绕前向 +X。手动模式使用同一套导航角约定。线协议保留 `android_event_id` 和 `android_pose_*` 兼容字段，同时增加 `ios_*` 字段；接收端应以 `ios_pose_frame_id=arkit_user_origin_x_forward_y_left_z_up` 识别该坐标语义。
 
 ## 验证边界
 

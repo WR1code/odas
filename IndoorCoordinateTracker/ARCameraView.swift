@@ -40,7 +40,7 @@ struct ARCameraView: UIViewRepresentable {
     }
 
     final class Coordinator {
-        let originNode = ARCoordinateOriginNode()
+        fileprivate let originNode = ARCoordinateOriginNode()
         var lastRevision = 0
 
         func placeOrigin(in view: ARSCNView) {

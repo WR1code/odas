@@ -1,4 +1,17 @@
-# AV-Twin iPhone Responder v0.13.3
+# AV-Twin iPhone Responder v0.14.0
+
+## v0.14.0 空间坐标系自动标定
+
+- 新增 iPhone `sceneDepth` 空间扫描：在当前用户 AR 原点下抽取深度点、过滤低置信度值，
+  并以 8 cm 体素实时累积，避免保存每帧重复点。
+- 新增“开始手机空间扫描”“停止扫描”“上传并自动标定”。点云通过独立 HTTP `5010`
+  上传到 Linux，不与声学 UDP 端口复用。
+- 新增“让 Linux 开始采集 MID-360S 地图（12秒）”。它复用远程启停的可信 UDP 控制
+  配置，使用稳定 `command_id`、三次发送、ACK、最终状态和 Linux 端幂等缓存；Linux 完成
+  雷达地图后会自动启动 `5010` 标定服务。
+- Linux 将手机地图与固定 MID-360S/FAST-LIO 地图进行重力约束多初值 ICP；只有重叠率、
+  残差和旋转多解检查全部通过才生成可应用的 `active_transform.json`。
+- 扫描期间禁止重置手机原点；后续声学采集也必须保持同一次 AR 原点，否则旧变换立即失效。
 
 ## iOS 同步控制 Linux 会话
 
@@ -79,8 +92,8 @@
 
 `.github/workflows/build-avtwin-ios.yml` 在 `macos-15` 上用 Xcode 编译：
 
-- PR 或手动运行且 `sign_ipa=false`：生成 `AVTwinIOSResponder-v0.13.3-unsigned.ipa`。它用于验证和后续重签，不能直接装到普通未越狱 iPhone。
-- 手动运行且 `sign_ipa=true`：导入你自己的证书和 Provisioning Profile，生成可安装的 `AVTwinIOSResponder-v0.13.3-signed.ipa`。
+- PR 或手动运行且 `sign_ipa=false`：生成 `AVTwinIOSResponder-v0.14.0-unsigned.ipa`。它用于验证和后续重签，不能直接装到普通未越狱 iPhone。
+- 手动运行且 `sign_ipa=true`：导入你自己的证书和 Provisioning Profile，生成可安装的 `AVTwinIOSResponder-v0.14.0-signed.ipa`。
 
 已签名模式需要在 GitHub 仓库配置以下 Actions Secrets：
 

@@ -53,6 +53,36 @@ struct MeasurementQualityResult: Sendable {
     }
 }
 
+struct LidarMapCaptureUpdate: Sendable {
+    let commandID: String
+    let messageType: String
+    let accepted: Bool
+    let state: String
+    let reason: String
+    let pointCount: Int64?
+    let calibrationHTTPPort: UInt16?
+
+    init?(json: [String: Any]) {
+        guard let type = JSONWire.string(json, "type"),
+              type == "lidar_map_capture_ack" || type == "lidar_map_capture_status",
+              let version = JSONWire.int64(json, "protocol_version"), version == 1,
+              let commandID = JSONWire.string(json, "command_id"), !commandID.isEmpty,
+              let accepted = JSONWire.bool(json, "accepted")
+        else { return nil }
+        self.commandID = commandID
+        messageType = type
+        self.accepted = accepted
+        state = JSONWire.string(json, "state") ?? "unknown"
+        reason = JSONWire.string(json, "reason") ?? "unknown"
+        pointCount = JSONWire.int64(json, "point_count")
+        if let rawPort = JSONWire.int64(json, "calibration_http_port") {
+            calibrationHTTPPort = UInt16(exactly: rawPort)
+        } else {
+            calibrationHTTPPort = nil
+        }
+    }
+}
+
 struct MeasurementQualityAcceptResult: Sendable {
     let accepted: Bool
     let reason: String

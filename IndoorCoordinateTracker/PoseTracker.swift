@@ -91,6 +91,9 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
     @Published private(set) var currentPose = DevicePose.unavailable
     @Published private(set) var statusText = "等待 ARKit 初始化"
     @Published private(set) var capturePoints: [CapturePoint] = []
+    @Published private(set) var isSpatialScanning = false
+    @Published private(set) var spatialScanPointCount = 0
+    @Published private(set) var spatialCalibrationStatus = "尚未开始空间扫描"
 
     private let poseLock = NSLock()
     private var latestPose = DevicePose.unavailable
@@ -100,6 +103,7 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
     private var captureSequence = 0
     private var qualityByMeasurement: [String: (CapturePointQuality, String)] = [:]
     private var resetRequested = true
+    private let spatialCloud = SpatialPointCloudAccumulator()
 
     func snapshot() -> DevicePose {
         poseLock.lock()
@@ -108,9 +112,65 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
     }
 
     func resetOrigin() {
+        guard !spatialCloud.isScanning else {
+            DispatchQueue.main.async { [weak self] in self?.spatialCalibrationStatus = "扫描期间不能重置原点" }
+            return
+        }
         poseLock.lock()
         resetRequested = true
         poseLock.unlock()
+    }
+
+    func startSpatialScan() {
+        guard snapshot().trackingState == "tracking" else {
+            spatialCalibrationStatus = "ARKit 未处于 tracking，不能开始"
+            return
+        }
+        spatialCloud.start()
+        isSpatialScanning = true
+        spatialScanPointCount = 0
+        spatialCalibrationStatus = "正在扫描：请缓慢绕场并覆盖墙角、桌面和非对称物体"
+    }
+
+    func stopSpatialScan() {
+        spatialCloud.stop()
+        isSpatialScanning = false
+        spatialScanPointCount = spatialCloud.count
+        spatialCalibrationStatus = "扫描已停止，共 \(spatialCloud.count) 个体素点"
+    }
+
+    func uploadSpatialScan(host: String, port: UInt16 = 5010) {
+        spatialCloud.stop()
+        isSpatialScanning = false
+        spatialCalibrationStatus = "正在编码并上传手机点云…"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            do {
+                let data = try self.spatialCloud.encodedAVPC()
+                SpatialCalibrationUploader.upload(data: data, host: host, port: port) { result in
+                    DispatchQueue.main.async {
+                        switch result {
+                        case .failure(let error):
+                            self.spatialCalibrationStatus = "上传/标定失败：\(error.localizedDescription)"
+                        case .success(let response):
+                            let calibration = response["result"] as? [String: Any]
+                            let quality = calibration?["quality"] as? [String: Any]
+                            let accepted = quality?["accepted"] as? Bool ?? false
+                            let rmse = quality?["rmse_m"] as? Double
+                            let reason = quality?["reason"] as? String ?? (response["reason"] as? String ?? "等待雷达地图")
+                            let rmseText = rmse.map { String(format: "，RMSE %.3fm", $0) } ?? ""
+                            self.spatialCalibrationStatus = accepted
+                                ? "坐标系标定通过\(rmseText)"
+                                : "点云已上传，但标定未通过：\(reason)\(rmseText)"
+                        }
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.spatialCalibrationStatus = "点云编码失败：\(error.localizedDescription)"
+                }
+            }
+        }
     }
 
     /// Records one completed C1 -> C2 exchange at the phone's physical AR
@@ -188,12 +248,18 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
             originBasis = currentHorizontalBasis
             resetRequested = false
         }
-        let relative = current - (origin ?? current)
+        let referenceOrigin = origin ?? current
+        let relative = current - referenceOrigin
         let referenceBasis = originBasis ?? currentHorizontalBasis
         poseLock.unlock()
         // `referenceBasis` columns are the reset-time X-forward, Y-left and
         // gravity-aligned Z-up axes expressed in ARKit world coordinates.
         let translated = referenceBasis.transpose * relative
+        if spatialCloud.isScanning {
+            spatialCloud.add(frame: frame, origin: referenceOrigin, basis: referenceBasis)
+            let count = spatialCloud.count
+            DispatchQueue.main.async { [weak self] in self?.spatialScanPointCount = count }
+        }
         let position = SIMD3<Double>(Double(translated.x), Double(translated.y), Double(translated.z))
         // ARKit exposes camera axes in its landscape camera convention. This
         // app is portrait-only, so map those axes to the physical phone body:

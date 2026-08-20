@@ -8,6 +8,7 @@ final class UDPControlServer: @unchecked Sendable {
     typealias CaptureStopHandler = @Sendable (CaptureStopCommand, String) -> CaptureCommandResult
     typealias CaptureOnceAckHandler = @Sendable (CaptureOnceAcknowledgement, String) -> Void
     typealias MeasurementQualityHandler = @Sendable (MeasurementQualityResult, String) -> MeasurementQualityAcceptResult
+    typealias LidarMapCaptureUpdateHandler = @Sendable (LidarMapCaptureUpdate, String) -> Void
 
     private let port: UInt16
     private let allowedHost: String
@@ -17,6 +18,7 @@ final class UDPControlServer: @unchecked Sendable {
     private let onCaptureStop: CaptureStopHandler
     private let onCaptureOnceAck: CaptureOnceAckHandler
     private let onMeasurementQuality: MeasurementQualityHandler
+    private let onLidarMapCaptureUpdate: LidarMapCaptureUpdateHandler
     private let onLog: @Sendable (String) -> Void
     private let queue = DispatchQueue(label: "com.avtwin.ios.udp-control", qos: .userInitiated)
     private let stateLock = NSLock()
@@ -32,6 +34,7 @@ final class UDPControlServer: @unchecked Sendable {
         onCaptureStop: @escaping CaptureStopHandler,
         onCaptureOnceAck: @escaping CaptureOnceAckHandler,
         onMeasurementQuality: @escaping MeasurementQualityHandler,
+        onLidarMapCaptureUpdate: @escaping LidarMapCaptureUpdateHandler,
         onLog: @escaping @Sendable (String) -> Void
     ) {
         self.port = port
@@ -42,6 +45,7 @@ final class UDPControlServer: @unchecked Sendable {
         self.onCaptureStop = onCaptureStop
         self.onCaptureOnceAck = onCaptureOnceAck
         self.onMeasurementQuality = onMeasurementQuality
+        self.onLidarMapCaptureUpdate = onLidarMapCaptureUpdate
         self.onLog = onLog
     }
 
@@ -152,6 +156,10 @@ final class UDPControlServer: @unchecked Sendable {
             }
             if let acknowledgement = CaptureOnceAcknowledgement(json: json) {
                 onCaptureOnceAck(acknowledgement, source)
+                continue
+            }
+            if let update = LidarMapCaptureUpdate(json: json) {
+                onLidarMapCaptureUpdate(update, source)
                 continue
             }
             if let quality = MeasurementQualityResult(json: json) {

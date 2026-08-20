@@ -48,6 +48,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     @Published private(set) var udpTestState: UDPTestState = .idle
     @Published private(set) var udpTestSummary = "尚未测试"
     @Published private(set) var lastLinuxQuality = "尚未收到 Linux 质量结果"
+    @Published private(set) var lidarMapCaptureStatus = "Linux 雷达地图：尚未请求"
 
     private struct CaptureAnchor { let sample: Int64; let hostTime: UInt64 }
     private let poseSnapshot: @Sendable () -> DevicePose
@@ -75,6 +76,8 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     private var latestAnchor: CaptureAnchor?
     private var pendingReply: (session: String, measurement: Int64, event: String, semaphore: DispatchSemaphore)?
     private var pendingCaptureRequestID: String?
+    private var pendingLidarMapCommandID: String?
+    private var lidarMapAckReceived = false
     private var pendingStartupCommandID: String?
     private var remoteStopPending = false
     private var routeGeneration: UInt64 = 0
@@ -206,6 +209,93 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
                 }
             }
         }
+    }
+
+    func requestLinuxLidarMapCapture(durationSeconds: Double = 12.0) {
+        guard let config = preparedConfiguration else {
+            DispatchQueue.main.async {
+                self.lidarMapCaptureStatus = "请先启用空闲远程控制并填写 Linux 网络参数"
+            }
+            return
+        }
+        guard (3.0...60.0).contains(durationSeconds) else {
+            DispatchQueue.main.async { self.lidarMapCaptureStatus = "地图采集时长必须为 3–60 秒" }
+            return
+        }
+        let commandID = UUID().uuidString
+        let request: [String: Any] = [
+            "type": "lidar_map_capture_start_request",
+            "protocol_version": 1,
+            "command_id": commandID,
+            "linux_result_port": Int(config.resultPort),
+            "mobile_control_port": Int(config.controlPort),
+            "duration_seconds": durationSeconds,
+            "sender": "ios",
+        ]
+        stateLock.lock()
+        pendingLidarMapCommandID = commandID
+        lidarMapAckReceived = false
+        stateLock.unlock()
+        DispatchQueue.main.async { self.lidarMapCaptureStatus = "已请求 Linux 采集雷达地图，等待 ACK…" }
+        appendLog("LIDAR_MAP_CAPTURE_REQUEST_QUEUED command=\(commandID) duration=\(durationSeconds)s")
+        DispatchQueue.global(qos: .userInitiated).async {
+            var sent = false
+            for attempt in 1...3 {
+                self.stateLock.lock()
+                let pending = self.pendingLidarMapCommandID == commandID
+                self.stateLock.unlock()
+                guard pending else { return }
+                do {
+                    _ = try UDPControlServer.sendJSON(request, host: config.linuxHost, port: config.resultPort)
+                    sent = true
+                    self.appendLog("LIDAR_MAP_CAPTURE_REQUEST_SENT command=\(commandID) attempt=\(attempt)/3")
+                } catch {
+                    self.appendLog("LIDAR_MAP_CAPTURE_REQUEST_FAILED command=\(commandID) error=\(error.localizedDescription)")
+                }
+                if attempt < 3 { Thread.sleep(forTimeInterval: 0.15) }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(1500)) {
+                self.stateLock.lock()
+                let timedOut = self.pendingLidarMapCommandID == commandID && !self.lidarMapAckReceived
+                if timedOut { self.pendingLidarMapCommandID = nil }
+                self.stateLock.unlock()
+                if timedOut {
+                    DispatchQueue.main.async {
+                        self.lidarMapCaptureStatus = sent
+                            ? "Linux 雷达地图 ACK 超时"
+                            : "Linux 雷达地图请求发送失败"
+                    }
+                }
+            }
+        }
+    }
+
+    private func receiveLidarMapCaptureUpdate(_ update: LidarMapCaptureUpdate, source: String) {
+        stateLock.lock()
+        let matches = pendingLidarMapCommandID == update.commandID
+        if matches {
+            lidarMapAckReceived = true
+            if update.state == "completed" || update.state == "failed" || !update.accepted {
+                pendingLidarMapCommandID = nil
+            }
+        }
+        stateLock.unlock()
+        guard matches else {
+            appendLog("LIDAR_MAP_CAPTURE_UPDATE_IGNORED from=\(source) command=\(update.commandID)")
+            return
+        }
+        let points = update.pointCount.map { "，\($0) 点" } ?? ""
+        let port = update.calibrationHTTPPort.map { "；标定服务 :\($0)" } ?? ""
+        let text: String
+        if update.state == "completed" && update.accepted {
+            text = "Linux 雷达地图采集完成\(points)\(port)"
+        } else if update.state == "capturing" && update.accepted {
+            text = "Linux 正在采集雷达地图…"
+        } else {
+            text = "Linux 雷达地图 \(update.state)：\(update.reason)"
+        }
+        DispatchQueue.main.async { self.lidarMapCaptureStatus = text }
+        appendLog("LIDAR_MAP_CAPTURE_UPDATE from=\(source) type=\(update.messageType) command=\(update.commandID) state=\(update.state) accepted=\(update.accepted)")
     }
 
     func pauseListening() {
@@ -637,6 +727,9 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
                     "tof_available": quality.tofAvailable, "source": source
                 ])
                 return .init(accepted: true, reason: "quality_applied")
+            },
+            onLidarMapCaptureUpdate: { [weak self] update, source in
+                self?.receiveLidarMapCaptureUpdate(update, source: source)
             },
             onLog: { [weak self] message in self?.appendLog(message) }
         )

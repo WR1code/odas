@@ -12,6 +12,7 @@ struct ContentView: View {
     @AppStorage("linuxHost") private var linuxHost = "192.168.1.100"
     @AppStorage("controlPort") private var controlPort = "5006"
     @AppStorage("resultPort") private var resultPort = "5005"
+    @AppStorage("calibrationPort") private var calibrationPort = "5010"
     @AppStorage("saveDebugAudio") private var saveDebugAudio = false
     @AppStorage("linuxRemoteStartEnabled") private var linuxRemoteStartEnabled = true
     @AppStorage("manualX") private var manualX = "0"
@@ -56,6 +57,7 @@ struct ContentView: View {
                     headerCard
                     probeCard
                     poseCard
+                    spatialCalibrationCard
                     sessionCard
                     networkCard
                     storageCard
@@ -86,7 +88,7 @@ struct ContentView: View {
                 Image(systemName: responder.isRunning ? "wave.3.right.circle.fill" : "iphone.gen3")
                     .font(.system(size: 34)).foregroundStyle(responder.isRunning ? .green : .cyan)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("AV-Twin iOS Responder v0.13.3").font(.headline)
+                    Text("AV-Twin iOS Responder v0.14.0").font(.headline)
                     Text("与 Android v0.12 对齐：远程启停、声学 t3、STRICT ARM").font(.caption2).foregroundStyle(.secondary)
                     Text(responder.status).font(.caption).foregroundStyle(.secondary)
                 }
@@ -205,12 +207,53 @@ struct ContentView: View {
             HStack {
                 TextField("iPhone ARM 端口", text: $controlPort).keyboardType(.numberPad).fieldStyle()
                 TextField("Linux 结果端口", text: $resultPort).keyboardType(.numberPad).fieldStyle()
+                TextField("标定 HTTP", text: $calibrationPort).keyboardType(.numberPad).fieldStyle()
             }
             Toggle("允许 Linux 在空闲时远程启动 iPhone 会话", isOn: $linuxRemoteStartEnabled)
                 .font(.caption)
             Text(linuxRemoteStartEnabled ? "已开启：空闲时监听控制端口，Linux 可发送 START_CAPTURE。" : "已关闭：空闲时不监听远程启动；仍可在本机手动开始会话。")
                 .font(.caption2).foregroundStyle(.secondary)
         }.disabled(responder.isRunning).card()
+    }
+
+    private var spatialCalibrationCard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Label("MID-360S / iPhone 空间坐标系标定", systemImage: "point.3.connected.trianglepath.dotted")
+                .font(.subheadline.bold())
+            Text("保持当前 AR 原点不变，缓慢绕雷达扫描双方都能看到的静态墙角、桌面和物体。上传后 Linux 自动进行重力约束点云配准。")
+                .font(.caption2).foregroundStyle(.secondary)
+            Button {
+                responder.requestLinuxLidarMapCapture(durationSeconds: 12)
+            } label: {
+                Label("让 Linux 开始采集 MID-360S 地图（12秒）", systemImage: "sensor.tag.radiowaves.forward")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent).tint(.indigo)
+            .disabled(!configurationValid || !linuxRemoteStartEnabled)
+            Text(responder.lidarMapCaptureStatus)
+                .font(.caption.monospacedDigit()).foregroundStyle(.secondary).textSelection(.enabled)
+            HStack {
+                if poseTracker.isSpatialScanning {
+                    Button("停止扫描") { poseTracker.stopSpatialScan() }
+                        .buttonStyle(.borderedProminent).tint(.orange)
+                } else {
+                    Button("开始手机空间扫描") { poseTracker.startSpatialScan() }
+                        .buttonStyle(.borderedProminent).tint(.cyan)
+                        .disabled(poseTracker.currentPose.trackingState != "tracking")
+                }
+                Button("上传并自动标定") {
+                    if let port = UInt16(calibrationPort) {
+                        poseTracker.uploadSpatialScan(host: linuxHost, port: port)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(poseTracker.isSpatialScanning || poseTracker.spatialScanPointCount < 80 || UInt16(calibrationPort) == nil)
+            }
+            Text("手机点云：\(poseTracker.spatialScanPointCount) 点 | \(poseTracker.spatialCalibrationStatus)")
+                .font(.caption.monospacedDigit()).textSelection(.enabled)
+        }
+        .disabled(responder.isRunning)
+        .card()
     }
 
     private var storageCard: some View {

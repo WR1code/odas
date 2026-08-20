@@ -8,6 +8,34 @@ import hashlib
 from typing import Any, Callable
 
 
+def validate_mobile_session_command(
+    message: dict[str, Any],
+    *,
+    expected_type: str,
+    expected_host: str | None,
+    linux_result_port: int,
+    mobile_control_port: int,
+) -> tuple[bool, str, str, int]:
+    """Validate an Android/iOS command that controls the Linux GUI session."""
+    source_host = str(message.get("source", "")).rsplit(":", 1)[0]
+    reply_port = message.get("mobile_control_port")
+    if message.get("type") != expected_type:
+        return False, "unexpected_command_type", source_host, mobile_control_port
+    if message.get("protocol_version") != 1:
+        return False, "unsupported_protocol_version", source_host, mobile_control_port
+    if not isinstance(message.get("command_id"), str) or not message["command_id"]:
+        return False, "missing_command_id", source_host, mobile_control_port
+    if not source_host:
+        return False, "missing_source", source_host, mobile_control_port
+    if expected_host and source_host != expected_host:
+        return False, "source_host_mismatch", source_host, mobile_control_port
+    if message.get("linux_result_port") != linux_result_port:
+        return False, "linux_result_port_mismatch", source_host, mobile_control_port
+    if reply_port != mobile_control_port:
+        return False, "mobile_control_port_mismatch", source_host, mobile_control_port
+    return True, "accepted", source_host, int(reply_port)
+
+
 class UdpListener:
     def __init__(self, host: str, port: int, notify: Callable[[str], None] | None = None):
         self.host = host
@@ -104,10 +132,38 @@ class UdpListener:
             else:
                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                     sock.sendto(payload, (host, port))
+        if message.get("measurement_id") is not None:
+            identifier = f"measurement_id={message['measurement_id']}"
+        elif message.get("command_id") is not None:
+            identifier = f"command_id={message['command_id']}"
+        else:
+            identifier = "id=none"
         self.notify(
             f"已发送 Android UDP {message.get('type', 'message')}："
-            f"measurement_id={message.get('measurement_id')} -> {host}:{port}"
+            f"{identifier} -> {host}:{port}"
         )
+
+    def send_measurement_quality(
+        self, host: str, port: int, *, session_id: str, measurement_id: int,
+        quality_pass: bool, quality_overall: str,
+        quality_failure_reasons: list[str], tof_available: bool,
+        attempts: int = 3,
+    ) -> dict[str, Any]:
+        """Reliably repeat the idempotent per-measurement quality result to iOS."""
+        message: dict[str, Any] = {
+            "type": "measurement_quality",
+            "protocol_version": 1,
+            "session_id": session_id,
+            "measurement_id": measurement_id,
+            "quality_pass": bool(quality_pass),
+            "quality_overall": str(quality_overall),
+            "quality_failure_reasons": [str(item) for item in quality_failure_reasons],
+            "tof_available": bool(tof_available),
+            "receiver": "ios",
+        }
+        for _attempt in range(max(1, attempts)):
+            self.send_json(host, port, message)
+        return message
 
 
 class UdpMeasurementTracker:

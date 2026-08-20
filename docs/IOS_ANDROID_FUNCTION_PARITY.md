@@ -20,6 +20,7 @@
 | 单次 C2 与 ×20 播放测试 | 单次 | 单次 + ×20 | iOS 是超集 |
 | 自动 SLAM/LiDAR 位姿 | 否 | 是 | iOS 的 ARKit/LiDAR 扩展 |
 | 手机按钮命令 Linux 插入一次采集 | 否 | 是 | iOS v0.13 新增，定时自动模式也可用 |
+| 手机按钮同步启停 Linux 连续会话 | 是 | 是 | 发送幂等 `linux_session_start_request` / `linux_session_stop_request`；Linux 校验来源 IP 与双端口 |
 
 ## “立即采集一次”协议
 

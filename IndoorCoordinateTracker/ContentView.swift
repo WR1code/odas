@@ -237,10 +237,10 @@ struct ContentView: View {
                     Button(responder.isPaused ? "继续监听" : "暂停监听") {
                         responder.isPaused ? responder.resumeListening() : responder.pauseListening()
                     }.buttonStyle(.borderedProminent).tint(.orange)
-                    Button("安全停止并保存", role: .destructive) { responder.stop() }.buttonStyle(.borderedProminent)
+                    Button("同步安全停止", role: .destructive) { responder.stop() }.buttonStyle(.borderedProminent)
                 }
             } else {
-                Button { startSession() } label: { Label("开始 STRICT ARM 会话", systemImage: "play.circle.fill").frame(maxWidth: .infinity) }
+                Button { startSession() } label: { Label("同步开始 iOS + Linux", systemImage: "play.circle.fill").frame(maxWidth: .infinity) }
                     .buttonStyle(.borderedProminent).tint(.green).disabled(!configurationValid || responder.isTestingC2)
             }
         }.card()

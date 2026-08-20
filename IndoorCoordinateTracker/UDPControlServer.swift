@@ -213,6 +213,14 @@ final class UDPControlServer: @unchecked Sendable {
                 }
                 continue
             }
+            if let type = JSONWire.string(json, "type"),
+               type == "linux_session_start_ack" || type == "linux_session_stop_ack" {
+                let accepted = JSONWire.bool(json, "accepted") ?? false
+                let commandID = JSONWire.string(json, "command_id") ?? "unknown"
+                let reason = JSONWire.string(json, "reason") ?? "unknown"
+                onLog("LINUX_SESSION_ACK type=\(type) command=\(commandID) accepted=\(accepted) reason=\(reason)")
+                continue
+            }
             onLog("未知 UDP 消息：\(source)")
         }
         stateLock.lock()

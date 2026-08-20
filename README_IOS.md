@@ -1,5 +1,12 @@
 # AV-Twin iPhone Responder v0.13.3
 
+## iOS 同步控制 Linux 会话
+
+- 在 iPhone 点击“同步开始 iOS + Linux”后，iOS 会先完成麦克风、音频引擎和 UDP 控制端口初始化，再向 Linux 结果端口重复发送 `linux_session_start_request`。
+- Linux GUI 必须保持打开、处于空闲状态，并选择 `manual_continuous` 或 `timed_continuous`；Linux 配置的移动端 IP、Linux 结果端口和 iPhone 控制端口必须与 iOS 一致。
+- 点击“同步安全停止”会重复发送 `linux_session_stop_request`，随后安全保存 iOS 本地数据；Linux 收到后也会结束连续采集并保存。
+- Linux 主动远程启动或停止 iOS 时，iOS 不会把同一命令反向回送，避免启停回环。
+
 ## 本次界面修复
 
 - 热点地址固定从 `bridge100` 读取，不再把蜂窝接口 `pdp_ip0` 显示成 iPhone Wi-Fi/热点地址。

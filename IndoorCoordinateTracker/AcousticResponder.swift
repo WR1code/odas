@@ -246,10 +246,14 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     func stop() {
         stateLock.lock()
         let wasActive = runningValue
+        let stoppedRemotely = remoteStopPending
         runningValue = false; listening = false; pausedValue = false
         pendingReply?.semaphore.signal(); pendingReply = nil; pendingCaptureRequestID = nil; pendingStartupCommandID = nil
         remoteStopPending = false
         stateLock.unlock()
+        if wasActive, !stoppedRemotely, let config = configuration {
+            sendLinuxSessionCommand(type: "linux_session_stop_request", config: config)
+        }
         controlServer?.stop(); controlServer = nil
         cleanupAudio()
         pairing.clearPending()
@@ -383,6 +387,9 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             appendLog("C2 \(config.c2.summary) SHA256=\(config.c2.sourceSHA256)")
             updateSessionFile(status: "running")
             notifyCaptureReady(config, storageSessionID: sessionID)
+            if config.startupCommandID == nil {
+                sendLinuxSessionCommand(type: "linux_session_start_request", config: config)
+            }
         } catch {
             stateLock.lock(); runningValue = false; stateLock.unlock()
             cleanupAudio(); storage?.close(); storage = nil
@@ -390,6 +397,40 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             DispatchQueue.main.async {
                 self.isRunning = false; self.stateName = "STOPPED"; self.status = "启动失败：\(error.localizedDescription)"
                 self.configureIdle(config)
+            }
+        }
+    }
+
+    private func sendLinuxSessionCommand(type: String, config: ResponderConfiguration) {
+        let commandID = UUID().uuidString
+        let command: [String: Any] = [
+            "type": type,
+            "protocol_version": 1,
+            "command_id": commandID,
+            "linux_result_port": Int(config.resultPort),
+            "mobile_control_port": Int(config.controlPort),
+            "sender": "ios",
+        ]
+        storage?.appendEvent(command)
+        appendLog("LINUX_SESSION_CONTROL_QUEUED type=\(type) command=\(commandID) -> \(config.linuxHost):\(config.resultPort)")
+        DispatchQueue.global(qos: .userInitiated).async {
+            var sent = false
+            for attempt in 1...3 {
+                do {
+                    _ = try UDPControlServer.sendJSON(
+                        command, host: config.linuxHost, port: config.resultPort
+                    )
+                    sent = true
+                    self.appendLog("LINUX_SESSION_CONTROL_SENT type=\(type) command=\(commandID) attempt=\(attempt)/3")
+                } catch {
+                    self.appendLog("LINUX_SESSION_CONTROL_FAILED type=\(type) command=\(commandID) attempt=\(attempt)/3 error=\(error.localizedDescription)")
+                }
+                if attempt < 3 { Thread.sleep(forTimeInterval: 0.15) }
+            }
+            if !sent {
+                self.publishStatus(type == "linux_session_stop_request"
+                    ? "iOS 已停止，但 Linux 安全停止指令发送失败"
+                    : "iOS 已启动，但 Linux 开始会话指令发送失败")
             }
         }
     }

@@ -94,6 +94,8 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
     @Published private(set) var isSpatialScanning = false
     @Published private(set) var spatialScanPointCount = 0
     @Published private(set) var spatialCalibrationStatus = "尚未开始空间扫描"
+    @Published private(set) var linuxLidarMap: SpatialPointCloudSnapshot?
+    @Published private(set) var linuxLidarMapStatus = "尚未下载 Linux 雷达地图"
 
     private let poseLock = NSLock()
     private var latestPose = DevicePose.unavailable
@@ -168,6 +170,22 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
             } catch {
                 DispatchQueue.main.async {
                     self.spatialCalibrationStatus = "点云编码失败：\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    func downloadLinuxLidarMap(host: String, port: UInt16 = 5010) {
+        linuxLidarMapStatus = "正在从 Linux 下载雷达点云…"
+        SpatialPointCloudDownloader.download(host: host, port: port) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let cloud):
+                    self.linuxLidarMap = cloud
+                    self.linuxLidarMapStatus = "Linux 雷达点云：\(cloud.points.count) 点，frame=\(cloud.frameID)"
+                case .failure(let error):
+                    self.linuxLidarMapStatus = "Linux 雷达点云下载失败：\(error.localizedDescription)"
                 }
             }
         }

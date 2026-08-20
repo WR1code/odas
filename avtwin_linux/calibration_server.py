@@ -40,6 +40,14 @@ class CalibrationService:
     def authorize(self, header: str | None) -> bool:
         return not self.token or header == f"Bearer {self.token}"
 
+    def lidar_map_payload(self) -> bytes:
+        if not self.lidar_map.is_file():
+            raise FileNotFoundError("雷达地图尚未采集")
+        # Validate the file before exposing it so iOS never receives a stale
+        # or partially written AVPC payload.
+        read_avpc(self.lidar_map)
+        return self.lidar_map.read_bytes()
+
     def accept_phone_map(self, payload: bytes) -> dict[str, Any]:
         if len(payload) > 200 * 1024 * 1024:
             raise ValueError("手机点云超过 200 MiB 限制")
@@ -90,7 +98,21 @@ def handler_for(service: CalibrationService) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(payload)
 
         def do_GET(self) -> None:  # noqa: N802
-            if urlparse(self.path).path != "/v1/status":
+            path = urlparse(self.path).path
+            if path == "/v1/lidar-map":
+                try:
+                    payload = service.lidar_map_payload()
+                except (OSError, ValueError) as exc:
+                    self._json(404, {"error": str(exc)})
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.avtwin.point-cloud")
+                self.send_header("Content-Length", str(len(payload)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            if path != "/v1/status":
                 self._json(404, {"error": "not_found"})
                 return
             self._json(200, service.status())

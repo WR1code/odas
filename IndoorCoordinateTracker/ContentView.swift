@@ -76,6 +76,11 @@ struct ContentView: View {
             responder.resetUDPTestState()
             configureIdleListener()
         }
+        .onChange(of: responder.lidarMapCaptureGeneration) { _, _ in
+            if let port = UInt16(calibrationPort) {
+                poseTracker.downloadLinuxLidarMap(host: linuxHost, port: port)
+            }
+        }
         .onDisappear { responder.shutdown() }
         .fileImporter(isPresented: $isImportingFile, allowedContentTypes: importTarget.allowedContentTypes) { result in
             handleImportResult(result, target: importTarget)
@@ -88,7 +93,7 @@ struct ContentView: View {
                 Image(systemName: responder.isRunning ? "wave.3.right.circle.fill" : "iphone.gen3")
                     .font(.system(size: 34)).foregroundStyle(responder.isRunning ? .green : .cyan)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("AV-Twin iOS Responder v0.14.0").font(.headline)
+                    Text("AV-Twin iOS Responder v0.15.0").font(.headline)
                     Text("与 Android v0.12 对齐：远程启停、声学 t3、STRICT ARM").font(.caption2).foregroundStyle(.secondary)
                     Text(responder.status).font(.caption).foregroundStyle(.secondary)
                 }
@@ -232,6 +237,27 @@ struct ContentView: View {
             .disabled(!configurationValid || !linuxRemoteStartEnabled)
             Text(responder.lidarMapCaptureStatus)
                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary).textSelection(.enabled)
+            HStack {
+                Button {
+                    if let port = UInt16(calibrationPort) {
+                        poseTracker.downloadLinuxLidarMap(host: linuxHost, port: port)
+                    }
+                } label: {
+                    Label("下载/刷新 Linux 点云", systemImage: "arrow.down.circle")
+                }
+                .buttonStyle(.bordered)
+                .disabled(UInt16(calibrationPort) == nil)
+                Text(poseTracker.linuxLidarMapStatus)
+                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            if let cloud = poseTracker.linuxLidarMap {
+                SpatialPointCloudPreview(cloud: cloud)
+                    .frame(height: 280)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay { RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.18)) }
+                Text("单指旋转 · 双指缩放 · 双指拖动；颜色表示高度")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
             HStack {
                 if poseTracker.isSpatialScanning {
                     Button("停止扫描") { poseTracker.stopSpatialScan() }

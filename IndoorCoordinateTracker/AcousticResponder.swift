@@ -49,6 +49,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     @Published private(set) var udpTestSummary = "尚未测试"
     @Published private(set) var lastLinuxQuality = "尚未收到 Linux 质量结果"
     @Published private(set) var lidarMapCaptureStatus = "Linux 雷达地图：尚未请求"
+    @Published private(set) var lidarMapCaptureGeneration = 0
 
     private struct CaptureAnchor { let sample: Int64; let hostTime: UInt64 }
     private let poseSnapshot: @Sendable () -> DevicePose
@@ -305,7 +306,12 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         } else {
             text = "Linux 雷达地图 \(update.state)：\(update.reason)"
         }
-        DispatchQueue.main.async { self.lidarMapCaptureStatus = text }
+        DispatchQueue.main.async {
+            self.lidarMapCaptureStatus = text
+            if update.state == "completed" && update.accepted {
+                self.lidarMapCaptureGeneration += 1
+            }
+        }
         appendLog("LIDAR_MAP_CAPTURE_UPDATE from=\(source) type=\(update.messageType) command=\(update.commandID) state=\(update.state) accepted=\(update.accepted)")
     }
 

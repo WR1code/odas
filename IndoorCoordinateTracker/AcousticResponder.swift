@@ -257,14 +257,25 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(1500)) {
                 self.stateLock.lock()
                 let timedOut = self.pendingLidarMapCommandID == commandID && !self.lidarMapAckReceived
-                if timedOut { self.pendingLidarMapCommandID = nil }
                 self.stateLock.unlock()
                 if timedOut {
                     DispatchQueue.main.async {
                         self.lidarMapCaptureStatus = sent
-                            ? "Linux 雷达地图 ACK 超时"
+                            ? "Linux 雷达地图 ACK 暂未收到，继续等待采集结果…"
                             : "Linux 雷达地图请求发送失败"
                     }
+                }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + durationSeconds + 8.0) {
+                self.stateLock.lock()
+                let finalTimedOut = self.pendingLidarMapCommandID == commandID
+                if finalTimedOut { self.pendingLidarMapCommandID = nil }
+                self.stateLock.unlock()
+                if finalTimedOut {
+                    DispatchQueue.main.async {
+                        self.lidarMapCaptureStatus = "Linux 雷达地图最终状态超时"
+                    }
+                    self.appendLog("LIDAR_MAP_CAPTURE_FINAL_TIMEOUT command=\(commandID)")
                 }
             }
         }

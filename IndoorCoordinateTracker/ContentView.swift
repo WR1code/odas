@@ -93,7 +93,7 @@ struct ContentView: View {
                 Image(systemName: responder.isRunning ? "wave.3.right.circle.fill" : "iphone.gen3")
                     .font(.system(size: 34)).foregroundStyle(responder.isRunning ? .green : .cyan)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("AV-Twin iOS Responder v0.15.0").font(.headline)
+                    Text("AV-Twin iOS Responder v0.15.1").font(.headline)
                     Text("与 Android v0.12 对齐：远程启停、声学 t3、STRICT ARM").font(.caption2).foregroundStyle(.secondary)
                     Text(responder.status).font(.caption).foregroundStyle(.secondary)
                 }
@@ -277,6 +277,22 @@ struct ContentView: View {
             }
             Text("手机点云：\(poseTracker.spatialScanPointCount) 点 | \(poseTracker.spatialCalibrationStatus)")
                 .font(.caption.monospacedDigit()).textSelection(.enabled)
+            if let cloud = poseTracker.phoneSpatialPreview {
+                HStack {
+                    Label(
+                        poseTracker.isSpatialScanning ? "iPhone 实时扫描点云" : "iPhone 本次扫描点云",
+                        systemImage: "viewfinder.circle"
+                    ).font(.caption.bold())
+                    Spacer()
+                    Text("预览 \(cloud.points.count) 点").font(.caption2.monospacedDigit())
+                }
+                SpatialPointCloudPreview(cloud: cloud)
+                    .frame(height: 300)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay { RoundedRectangle(cornerRadius: 12).stroke(.cyan.opacity(0.35)) }
+                Text("扫描时约每0.5秒刷新；确认画面中包含门框、墙角、桌角等非对称结构")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
         }
         .disabled(responder.isRunning)
         .card()

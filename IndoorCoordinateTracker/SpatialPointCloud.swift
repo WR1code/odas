@@ -54,6 +54,27 @@ final class SpatialPointCloudAccumulator: @unchecked Sendable {
         return voxels.count
     }
 
+    func snapshot(maximumPreviewPoints: Int = 60_000) -> SpatialPointCloudSnapshot? {
+        lock.lock()
+        let values = Array(voxels.values)
+        lock.unlock()
+        guard values.count >= 3 else { return nil }
+        let points: [SIMD3<Float>]
+        if values.count <= maximumPreviewPoints {
+            points = values
+        } else {
+            let step = max(1, values.count / maximumPreviewPoints)
+            points = stride(from: 0, to: values.count, by: step).prefix(maximumPreviewPoints).map {
+                values[$0]
+            }
+        }
+        return SpatialPointCloudSnapshot(
+            points: points,
+            frameID: "arkit_user_origin_x_forward_y_left_z_up",
+            source: "iphone_arkit_scene_depth_live"
+        )
+    }
+
     func add(frame: ARFrame, origin: SIMD3<Float>, basis: simd_float3x3) {
         lock.lock()
         guard scanning, frame.timestamp - lastFrameTimestamp >= minimumFrameInterval,

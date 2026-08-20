@@ -94,6 +94,7 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
     @Published private(set) var isSpatialScanning = false
     @Published private(set) var spatialScanPointCount = 0
     @Published private(set) var spatialCalibrationStatus = "尚未开始空间扫描"
+    @Published private(set) var phoneSpatialPreview: SpatialPointCloudSnapshot?
     @Published private(set) var linuxLidarMap: SpatialPointCloudSnapshot?
     @Published private(set) var linuxLidarMapStatus = "尚未下载 Linux 雷达地图"
 
@@ -106,6 +107,7 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
     private var qualityByMeasurement: [String: (CapturePointQuality, String)] = [:]
     private var resetRequested = true
     private let spatialCloud = SpatialPointCloudAccumulator()
+    private var lastSpatialPreviewTimestamp: TimeInterval = -.infinity
 
     func snapshot() -> DevicePose {
         poseLock.lock()
@@ -131,6 +133,8 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
         spatialCloud.start()
         isSpatialScanning = true
         spatialScanPointCount = 0
+        phoneSpatialPreview = nil
+        lastSpatialPreviewTimestamp = -.infinity
         spatialCalibrationStatus = "正在扫描：请缓慢绕场并覆盖墙角、桌面和非对称物体"
     }
 
@@ -138,6 +142,7 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
         spatialCloud.stop()
         isSpatialScanning = false
         spatialScanPointCount = spatialCloud.count
+        phoneSpatialPreview = spatialCloud.snapshot()
         spatialCalibrationStatus = "扫描已停止，共 \(spatialCloud.count) 个体素点"
     }
 
@@ -276,7 +281,13 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
         if spatialCloud.isScanning {
             spatialCloud.add(frame: frame, origin: referenceOrigin, basis: referenceBasis)
             let count = spatialCloud.count
-            DispatchQueue.main.async { [weak self] in self?.spatialScanPointCount = count }
+            let shouldRefreshPreview = frame.timestamp - lastSpatialPreviewTimestamp >= 0.50
+            let preview = shouldRefreshPreview ? spatialCloud.snapshot() : nil
+            if shouldRefreshPreview { lastSpatialPreviewTimestamp = frame.timestamp }
+            DispatchQueue.main.async { [weak self] in
+                self?.spatialScanPointCount = count
+                if let preview { self?.phoneSpatialPreview = preview }
+            }
         }
         let position = SIMD3<Double>(Double(translated.x), Double(translated.y), Double(translated.z))
         // ARKit exposes camera axes in its landscape camera convention. This

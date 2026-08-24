@@ -35,10 +35,13 @@ from .handshake import Role
 from .network_info import format_network_status, network_snapshot
 from .output_paths import validate_output_root
 from .pose import (
-    ManualPoseProvider, PoseProvider, UdpPoseProvider, parse_vector3, transform_offset,
+    ManualPoseProvider, PoseProvider, PoseSample, UdpPoseProvider, parse_vector3,
+    transform_offset,
 )
 from .role_session import HandshakeSession
-from .udp_listener import UdpListener
+from .shared_origin import configure_shared_origin
+from .spatial_calibration import load_calibration
+from .udp_listener import UdpListener, validate_mobile_session_command
 
 
 class ControllerGui:
@@ -53,6 +56,9 @@ class ControllerGui:
         self.active_controller: Controller | ContinuousController | HandshakeSession | None = None
         self.live_pose_provider: PoseProvider | None = None
         self.idle_udp_listener: UdpListener | None = None
+        self._idle_udp_cursor = 0
+        self._shared_origin_last_command_id = ""
+        self._shared_origin_last_response: dict[str, Any] | None = None
         self._udp_test_running = False
         self.devices: list[AudioDeviceInfo] = []
         self.input_choices: dict[str, AudioDeviceInfo] = {}
@@ -128,6 +134,7 @@ class ControllerGui:
             "status": tk.StringVar(value="就绪：先选择 C1、C2、UMA-8 输入和扬声器输出设备"),
             "session_status": tk.StringVar(value="状态 IDLE | measurement 0 | 成功 0 / 失败 0 / 跳过 0"),
             "pose_status": tk.StringVar(value="等待定位数据或应用手动当前坐标…"),
+            "shared_origin_status": tk.StringVar(value="共享原点：尚未由手机设置"),
             "event_pose_status": tk.StringVar(value="本次采集冻结坐标：尚无完成的声学事件"),
             "udp_test_status": tk.StringVar(value="UDP 双向检验：尚未测试"),
             "network_status": tk.StringVar(value="Linux 本机 IPv4：正在读取…"),
@@ -294,6 +301,9 @@ class ControllerGui:
         ttk.Label(pose_status_row, textvariable=self.vars["pose_status"]).pack(side="left")
         ttk.Label(
             pose_frame, textvariable=self.vars["event_pose_status"],
+        ).pack(anchor="w", pady=(6, 0))
+        ttk.Label(
+            pose_frame, textvariable=self.vars["shared_origin_status"],
         ).pack(anchor="w", pady=(6, 0))
         ttk.Label(
             pose_frame,
@@ -942,10 +952,186 @@ class ControllerGui:
             listener.stop()
             return
         self.idle_udp_listener = listener
+        self._idle_udp_cursor = 0
         if "尚未测试" in self.vars["udp_test_status"].get():
             self.vars["udp_test_status"].set(
                 f"Linux 常驻 UDP 测试监听已就绪：所有本机IP:{port}（Android 可直接发起检验）"
             )
+
+    def _send_shared_origin_response(
+        self, listener: UdpListener, host: str, port: int, response: dict[str, Any],
+    ) -> None:
+        if not host or not 1 <= port <= 65535:
+            return
+        for _attempt in range(3):
+            listener.send_json(host, port, response)
+            time.sleep(0.05)
+
+    def _handle_shared_origin_request(
+        self, listener: UdpListener, message: dict[str, Any],
+    ) -> None:
+        try:
+            linux_port = int(self.vars["udp_port"].get())
+            mobile_port = int(self.vars["android_port"].get())
+        except ValueError:
+            linux_port, mobile_port = -1, -1
+        accepted, reason, source_host, reply_port = validate_mobile_session_command(
+            message,
+            expected_type="shared_origin_set_request",
+            expected_host=self.vars["android_host"].get().strip() or None,
+            linux_result_port=linux_port,
+            mobile_control_port=mobile_port,
+        )
+        command_id = str(message.get("command_id") or "")
+        if (
+            accepted and command_id == self._shared_origin_last_command_id
+            and self._shared_origin_last_response is not None
+        ):
+            try:
+                self._send_shared_origin_response(
+                    listener, source_host, reply_port,
+                    dict(self._shared_origin_last_response),
+                )
+            except OSError as exc:
+                self._append(f"WARNING: 共享原点重复 ACK 发送失败：{exc}")
+            self._append(
+                f"SHARED_ORIGIN_DUPLICATE_REACK command={command_id} from={source_host}"
+            )
+            return
+        response: dict[str, Any] = {
+            "type": "shared_origin_set_ack", "protocol_version": 1,
+            "command_id": command_id, "accepted": False,
+            "reason": reason, "receiver": "linux",
+        }
+        try:
+            if not accepted:
+                raise ValueError(reason)
+            if self.worker and self.worker.is_alive():
+                raise ValueError("acoustic_session_running")
+            provider = self.live_pose_provider
+            if not isinstance(provider, UdpPoseProvider):
+                raise ValueError("mid360_udp_pose_not_ready")
+            raw_radar = provider.raw_latest()
+            if raw_radar is None:
+                raise ValueError("mid360_raw_pose_unavailable")
+            calibration_dir = Path(__file__).resolve().parent / "calibration"
+            active_path = calibration_dir / "active_transform.json"
+            calibration = load_calibration(active_path)
+            if raw_radar.frame_id != calibration["target_frame_id"]:
+                raise ValueError(
+                    "radar_frame_mismatch："
+                    f"{raw_radar.frame_id} != {calibration['target_frame_id']}"
+                )
+            phone_pose = message.get("phone_origin_pose")
+            if not isinstance(phone_pose, dict):
+                raise ValueError("missing_phone_origin_pose")
+            phone_source_id = str(message.get("phone_source_id") or "").strip()
+            phone_source_after_reset_id = str(
+                message.get("phone_source_after_reset_id") or ""
+            ).strip()
+            if not phone_source_id or not phone_source_after_reset_id:
+                raise ValueError("missing_phone_source_id")
+            microphone_pose = transform_offset(
+                raw_radar, parse_vector3(self.vars["microphone_offset"].get()),
+                child_frame_id="uma8_acoustic_center",
+            )
+            active_stat = active_path.stat()
+            active_signature = f"{active_stat.st_mtime_ns}:{active_stat.st_size}"
+            state_path = calibration_dir / "shared_origin_state.json"
+            previous_state: dict[str, Any] = {}
+            if state_path.is_file():
+                try:
+                    previous_state = json.loads(state_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    previous_state = {}
+            current_phone_to_world = (
+                previous_state.get("phone_source_to_world")
+                if previous_state.get("active_calibration_signature") == active_signature
+                and previous_state.get("phone_source_id") == phone_source_id
+                else None
+            )
+            result = configure_shared_origin(
+                calibration, mode=str(message.get("mode") or ""),
+                phone_origin_pose=phone_pose,
+                linux_microphone_pose=microphone_pose,
+                phone_source_to_world=current_phone_to_world,
+            )
+            derived_path = calibration_dir / "shared_origin_transform.json"
+            state_value = {
+                "protocol": "AVTWIN_SHARED_ORIGIN_V1",
+                "active_calibration_signature": active_signature,
+                "phone_source_id": phone_source_after_reset_id,
+                "phone_source_to_world": result["next_phone_source_to_world"],
+                "mode": result["mode"],
+                "shared_frame_id": result["shared_frame_id"],
+                "phone_position_m": result["phone_position_m"],
+                "linux_microphone_position_m": result["linux_microphone_position_m"],
+            }
+            for path, value in (
+                (derived_path, result["derived_calibration"]),
+                (state_path, state_value),
+            ):
+                temporary = path.with_suffix(path.suffix + ".tmp")
+                temporary.write_text(
+                    json.dumps(value, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                temporary.replace(path)
+            origin = result["origin_pose_world"]
+            provider.set_origin_pose(PoseSample(
+                timestamp_ns=time.monotonic_ns(),
+                position_m=parse_vector3(origin["position_m"]),
+                orientation_xyzw=tuple(float(value) for value in origin["orientation_xyzw"]),
+                frame_id=str(origin["frame_id"]),
+                child_frame_id=str(origin["child_frame_id"]),
+                tracking_status="TRACKING",
+                timestamp_basis="shared_origin_command",
+                source=f"shared_origin:{result['mode']}",
+            ), frame_id=result["shared_frame_id"])
+            phone = result["phone_position_m"]
+            linux = result["linux_microphone_position_m"]
+            self.vars["shared_origin_status"].set(
+                f"共享原点 {result['mode']} | "
+                f"iPhone=({phone[0]:.3f},{phone[1]:.3f},{phone[2]:.3f})m | "
+                f"UMA-8=({linux[0]:.3f},{linux[1]:.3f},{linux[2]:.3f})m"
+            )
+            response.update({
+                "accepted": True, "reason": "shared_origin_applied",
+                "mode": result["mode"],
+                "shared_frame_id": result["shared_frame_id"],
+                "phone_reset_required": result["phone_reset_required"],
+                "phone_position_m": phone,
+                "linux_microphone_position_m": linux,
+                "shared_from_phone_source": result["shared_from_phone_source"],
+                "phone_source_from_shared_origin": result["phone_source_from_shared_origin"],
+                "phone_source_from_linux_microphone": result["phone_source_from_linux_microphone"],
+            })
+            accepted, reason = True, "shared_origin_applied"
+            self._shared_origin_last_command_id = command_id
+            self._shared_origin_last_response = dict(response)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            accepted, reason = False, str(exc)
+            response.update({"accepted": False, "reason": reason})
+            self.vars["shared_origin_status"].set(f"共享原点设置失败：{reason}")
+        try:
+            self._send_shared_origin_response(listener, source_host, reply_port, response)
+        except OSError as exc:
+            self._append(f"WARNING: 共享原点 ACK 发送失败：{exc}")
+        self._append(
+            f"SHARED_ORIGIN_{'APPLIED' if accepted else 'REJECTED'} "
+            f"command={command_id} from={source_host} reason={reason}"
+        )
+
+    def _poll_idle_session_commands(self) -> None:
+        listener = self.idle_udp_listener
+        if listener is None or (self.worker and self.worker.is_alive()):
+            return
+        messages = listener.messages
+        pending = messages[self._idle_udp_cursor:]
+        self._idle_udp_cursor = len(messages)
+        for message in pending:
+            if message.get("type") == "shared_origin_set_request":
+                self._handle_shared_origin_request(listener, message)
 
     def test_udp(self) -> None:
         if self.worker and self.worker.is_alive():
@@ -1354,6 +1540,7 @@ class ControllerGui:
         except queue.Empty:
             pass
         now = time.monotonic()
+        self._poll_idle_session_commands()
         if now >= self._next_network_refresh and not self._network_refresh_running:
             self._next_network_refresh = now + 2.0
             self._network_refresh_running = True

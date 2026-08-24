@@ -241,6 +241,8 @@ class PoseProvider(Protocol):
     def pose_at(self, timestamp_ns: int) -> tuple[PoseSample | None, dict[str, Any]]: ...
     def metadata(self) -> dict[str, Any]: ...
     def reset_origin(self) -> None: ...
+    def raw_latest(self) -> PoseSample | None: ...
+    def set_origin_pose(self, origin: PoseSample, *, frame_id: str) -> None: ...
 
 
 class NullPoseProvider:
@@ -255,6 +257,8 @@ class NullPoseProvider:
         return {"source": "disabled", "received": 0, "rejected": 0}
 
     def reset_origin(self) -> None: pass
+    def raw_latest(self) -> None: return None
+    def set_origin_pose(self, origin: PoseSample, *, frame_id: str) -> None: pass
 
 
 class ManualPoseProvider:
@@ -320,6 +324,12 @@ class ManualPoseProvider:
     def reset_origin(self) -> None:
         self.update((0.0, 0.0, 0.0))
 
+    def raw_latest(self) -> PoseSample:
+        return self.latest()
+
+    def set_origin_pose(self, origin: PoseSample, *, frame_id: str) -> None:
+        raise ValueError("手动位姿模式不支持远程共享原点，请使用 MID-360S UDP 位姿")
+
     def metadata(self) -> dict[str, Any]:
         with self._lock:
             update_count = len(self._updates)
@@ -352,6 +362,7 @@ class UdpPoseProvider:
         self._origin_lock = threading.Lock()
         self._users = 0
         self._origin: PoseSample | None = None
+        self._relative_frame_id: str | None = None
         self._last_accepted_raw: PoseSample | None = None
         self.max_linear_speed_m_s = float(max_linear_speed_m_s)
         self.jump_tolerance_m = float(jump_tolerance_m)
@@ -416,7 +427,10 @@ class UdpPoseProvider:
                             self._last_accepted_raw = sample
                             if self._origin is None:
                                 self._origin = sample
-                            sample = relative_pose(sample, self._origin)
+                                self._relative_frame_id = None
+                            sample = relative_pose(
+                                sample, self._origin, frame_id=self._relative_frame_id,
+                            )
                             # Keep zero reset atomic with publishing the rebased
                             # sample so an old-frame sample cannot reappear.
                             self.timeline.add(sample)
@@ -447,10 +461,32 @@ class UdpPoseProvider:
     def latest(self) -> PoseSample | None:
         return self.timeline.latest()
 
+    def raw_latest(self) -> PoseSample | None:
+        with self._origin_lock:
+            return self._last_accepted_raw
+
+    def set_origin_pose(self, origin: PoseSample, *, frame_id: str) -> None:
+        """Rebase future raw SLAM poses to an explicit shared origin pose."""
+        if not frame_id.strip():
+            raise ValueError("共享 frame_id 不能为空")
+        with self._origin_lock:
+            raw = self._last_accepted_raw
+            if raw is None:
+                raise ValueError("尚未收到 MID-360S 原始位姿")
+            if origin.frame_id != raw.frame_id:
+                raise ValueError(
+                    f"共享原点 frame {origin.frame_id!r} 与雷达 frame {raw.frame_id!r} 不一致"
+                )
+            self._origin = origin
+            self._relative_frame_id = frame_id.strip()
+            self.timeline.clear()
+            self.timeline.add(relative_pose(raw, origin, frame_id=self._relative_frame_id))
+
     def reset_origin(self) -> None:
         """Make the next received pose the new zero without restarting ROS."""
         with self._origin_lock:
             self._origin = None
+            self._relative_frame_id = None
             self._last_accepted_raw = None
             self.timeline.clear()
             self.last_rejection = None
@@ -485,7 +521,9 @@ def _multiply_quaternions(
     ))
 
 
-def relative_pose(sample: PoseSample, origin: PoseSample) -> PoseSample:
+def relative_pose(
+    sample: PoseSample, origin: PoseSample, *, frame_id: str | None = None,
+) -> PoseSample:
     """Express a pose in a coordinate frame fixed to an origin pose."""
     inverse_origin = (
         -origin.orientation_xyzw[0], -origin.orientation_xyzw[1],
@@ -499,7 +537,7 @@ def relative_pose(sample: PoseSample, origin: PoseSample) -> PoseSample:
         timestamp_ns=sample.timestamp_ns,
         position_m=rotate_vector(inverse_origin, delta),
         orientation_xyzw=_multiply_quaternions(inverse_origin, sample.orientation_xyzw),
-        frame_id=f"{sample.frame_id}/user_zero",
+        frame_id=frame_id or f"{sample.frame_id}/user_zero",
         child_frame_id=sample.child_frame_id,
         tracking_status=sample.tracking_status,
         timestamp_basis=sample.timestamp_basis,

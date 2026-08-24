@@ -3,6 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var poseTracker: PoseTracker
     @StateObject private var poseSelection: PoseSelectionStore
     @StateObject private var responder: AcousticResponder
@@ -25,7 +26,8 @@ struct ContentView: View {
     @State private var isImportingFile = false
     @State private var importStatus: String?
     @State private var showingLog = false
-    @State private var localIPv4 = "unavailable"
+    @State private var networkSnapshot = LocalNetworkInfo.snapshot()
+    @State private var selectedPointCloud: PointCloudViewerSelection?
     @State private var visualOriginRevision = 0
 
     init(poseTracker: PoseTracker) {
@@ -69,8 +71,11 @@ struct ContentView: View {
             }
         }
         .onAppear {
-            localIPv4 = LocalNetworkInfo.hotspotIPv4()
+            refreshNetworkSnapshot()
             configureIdleListener()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { refreshNetworkSnapshot() }
         }
         .onChange(of: idleConfigurationKey) { _, _ in
             responder.resetUDPTestState()
@@ -84,6 +89,9 @@ struct ContentView: View {
         .onDisappear { responder.shutdown() }
         .fileImporter(isPresented: $isImportingFile, allowedContentTypes: importTarget.allowedContentTypes) { result in
             handleImportResult(result, target: importTarget)
+        }
+        .fullScreenCover(item: $selectedPointCloud) { selection in
+            PointCloudViewerScreen(selection: selection)
         }
     }
 
@@ -206,9 +214,13 @@ struct ContentView: View {
     private var networkCard: some View {
         VStack(alignment: .leading, spacing: 9) {
             Label("Wi-Fi / UDP", systemImage: "network").font(.subheadline.bold())
-            Text("iPhone 热点 IPv4：\(localIPv4)\nLinux ARM/远程启停目标：\(linuxHost):\(controlPort)\n接口：\(LocalNetworkInfo.display())")
+            Text("当前连接：\(networkSnapshot.mode)\n\(networkSnapshot.addressLabel)：\(networkSnapshot.localIPv4)\nLinux ARM/远程启停目标：\(linuxHost):\(controlPort)\n接口：\(LocalNetworkInfo.display())")
                 .font(.caption.monospaced()).textSelection(.enabled)
-            TextField("Linux Wi-Fi IPv4", text: $linuxHost).keyboardType(.numbersAndPunctuation).fieldStyle()
+            if let warning = networkSnapshot.linuxTargetWarning(host: linuxHost) {
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption2).foregroundStyle(.orange)
+            }
+            TextField("Linux 当前网络 IPv4", text: $linuxHost).keyboardType(.numbersAndPunctuation).fieldStyle()
             HStack {
                 TextField("iPhone ARM 端口", text: $controlPort).keyboardType(.numberPad).fieldStyle()
                 TextField("Linux 结果端口", text: $resultPort).keyboardType(.numberPad).fieldStyle()
@@ -251,12 +263,13 @@ struct ContentView: View {
                     .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
             }
             if let cloud = poseTracker.linuxLidarMap {
-                SpatialPointCloudPreview(cloud: cloud)
-                    .frame(height: 280)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay { RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.18)) }
-                Text("单指旋转 · 双指缩放 · 双指拖动；颜色表示高度")
-                    .font(.caption2).foregroundStyle(.secondary)
+                pointCloudPanel(
+                    cloud: cloud,
+                    title: "Linux MID-360S 下载点云",
+                    tint: .indigo,
+                    height: 300,
+                    note: "已下载到手机；可直接旋转、缩放、拖动，或进入全屏查看。"
+                )
             }
             HStack {
                 if poseTracker.isSpatialScanning {
@@ -278,24 +291,52 @@ struct ContentView: View {
             Text("手机点云：\(poseTracker.spatialScanPointCount) 点 | \(poseTracker.spatialCalibrationStatus)")
                 .font(.caption.monospacedDigit()).textSelection(.enabled)
             if let cloud = poseTracker.phoneSpatialPreview {
-                HStack {
-                    Label(
-                        poseTracker.isSpatialScanning ? "iPhone 实时扫描点云" : "iPhone 本次扫描点云",
-                        systemImage: "viewfinder.circle"
-                    ).font(.caption.bold())
-                    Spacer()
-                    Text("预览 \(cloud.points.count) 点").font(.caption2.monospacedDigit())
-                }
-                SpatialPointCloudPreview(cloud: cloud)
-                    .frame(height: 300)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay { RoundedRectangle(cornerRadius: 12).stroke(.cyan.opacity(0.35)) }
-                Text("扫描时约每0.5秒刷新；确认画面中包含门框、墙角、桌角等非对称结构")
-                    .font(.caption2).foregroundStyle(.secondary)
+                pointCloudPanel(
+                    cloud: cloud,
+                    title: poseTracker.isSpatialScanning ? "iPhone 实时扫描点云" : "iPhone 本次扫描点云",
+                    tint: .cyan,
+                    height: 300,
+                    note: "扫描时约每0.5秒刷新；确认画面中包含门框、墙角、桌角等非对称结构。"
+                )
             }
         }
         .disabled(responder.isRunning)
         .card()
+    }
+
+    @ViewBuilder
+    private func pointCloudPanel(
+        cloud: SpatialPointCloudSnapshot,
+        title: String,
+        tint: Color,
+        height: CGFloat,
+        note: String
+    ) -> some View {
+        HStack {
+            Label(title, systemImage: "viewfinder.circle").font(.caption.bold())
+            Spacer()
+            Text("\(cloud.points.count) 点").font(.caption2.monospacedDigit())
+        }
+        SpatialPointCloudPreview(cloud: cloud)
+            .frame(height: height)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay { RoundedRectangle(cornerRadius: 12).stroke(tint.opacity(0.45)) }
+        HStack(alignment: .top) {
+            Text(note).font(.caption2).foregroundStyle(.secondary)
+            Spacer()
+            Button {
+                selectedPointCloud = PointCloudViewerSelection(title: title, tint: tint, cloud: cloud)
+            } label: {
+                Label("全屏查看", systemImage: "arrow.up.left.and.arrow.down.right")
+            }
+            .font(.caption2).buttonStyle(.bordered)
+        }
+        Text("单指旋转 · 双指缩放 · 双指拖动 · 颜色表示高度")
+            .font(.caption2).foregroundStyle(.secondary)
+    }
+
+    private func refreshNetworkSnapshot() {
+        networkSnapshot = LocalNetworkInfo.snapshot()
     }
 
     private var storageCard: some View {
@@ -494,6 +535,50 @@ private final class DeviceThermalMonitor: ObservableObject {
         case .critical: return .red
         @unknown default: return .gray
         }
+    }
+}
+
+private struct PointCloudViewerSelection: Identifiable {
+    let title: String
+    let tint: Color
+    let cloud: SpatialPointCloudSnapshot
+
+    var id: UUID { cloud.id }
+}
+
+private struct PointCloudViewerScreen: View {
+    @Environment(\.dismiss) private var dismiss
+    let selection: PointCloudViewerSelection
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            SpatialPointCloudPreview(cloud: selection.cloud)
+                .ignoresSafeArea()
+            VStack(spacing: 12) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(selection.title).font(.headline)
+                        Text("\(selection.cloud.points.count) 点 · frame=\(selection.cloud.frameID)")
+                            .font(.caption2.monospaced()).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 30)).symbolRenderingMode(.hierarchical)
+                    }
+                    .tint(.white)
+                }
+                .padding(12)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                Spacer()
+                Text("单指旋转 · 双指缩放 · 双指拖动 · 颜色表示高度")
+                    .font(.caption).padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(.ultraThinMaterial, in: Capsule())
+            }
+            .padding()
+        }
+        .preferredColorScheme(.dark)
     }
 }
 

@@ -290,6 +290,7 @@ struct ContentView: View {
             }
             Text("手机点云：\(poseTracker.spatialScanPointCount) 点 | \(poseTracker.spatialCalibrationStatus)")
                 .font(.caption.monospacedDigit()).textSelection(.enabled)
+            spatialReadinessPanel
             if let cloud = poseTracker.phoneSpatialPreview {
                 pointCloudPanel(
                     cloud: cloud,
@@ -302,6 +303,49 @@ struct ContentView: View {
         }
         .disabled(responder.isRunning)
         .card()
+    }
+
+    private var spatialReadinessPanel: some View {
+        let readiness = poseTracker.spatialReadiness
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Label("统一坐标系标定就绪度", systemImage: "scope")
+                    .font(.caption.bold())
+                Spacer()
+                Text("\(readiness.score)%")
+                    .font(.headline.monospacedDigit()).foregroundStyle(readinessColor)
+            }
+            ProgressView(value: Double(readiness.score), total: 100)
+                .tint(readinessColor)
+            Text(readiness.phase).font(.caption.bold()).foregroundStyle(readinessColor)
+            VStack(spacing: 3) {
+                HStack {
+                    Text("手机覆盖 \(readiness.coverageScore)%")
+                    Spacer()
+                    Text(readiness.overlapRatio.map { String(format: "重叠 %.0f%%", $0 * 100) } ?? "重叠 --")
+                }
+                HStack {
+                    Text(readiness.rmseM.map { String(format: "RMSE %.3fm", $0) } ?? "RMSE --")
+                    Spacer()
+                    Text("连续稳定 \(readiness.stableUpdates)/3")
+                }
+            }
+            .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+            Text(readiness.guidance).font(.caption2)
+            Text("实时值是轻量预估；达到就绪后仍须上传，由 Linux 完整配准最终确认并激活坐标变换。")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .background(readinessColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .overlay { RoundedRectangle(cornerRadius: 10).stroke(readinessColor.opacity(0.30)) }
+    }
+
+    private var readinessColor: Color {
+        switch poseTracker.spatialReadiness.score {
+        case 85...: return .green
+        case 55...: return .orange
+        default: return .cyan
+        }
     }
 
     @ViewBuilder

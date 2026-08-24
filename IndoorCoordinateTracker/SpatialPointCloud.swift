@@ -13,6 +13,371 @@ struct SpatialPointCloudSnapshot: Identifiable, Sendable {
     let source: String
 }
 
+struct SpatialScanTrajectory: Sendable {
+    let travelDistance: Float
+    let horizontalSpan: Float
+}
+
+struct SpatialCalibrationReadiness: Equatable, Sendable {
+    let score: Int
+    let coverageScore: Int
+    let phase: String
+    let guidance: String
+    let overlapRatio: Float?
+    let rmseM: Float?
+    let stableUpdates: Int
+
+    static let notStarted = SpatialCalibrationReadiness(
+        score: 0, coverageScore: 0, phase: "尚未评估",
+        guidance: "先下载 Linux 点云，再开始手机空间扫描。",
+        overlapRatio: nil, rmseM: nil, stableUpdates: 0
+    )
+}
+
+/// Fast, local readiness estimate used while scanning.  This deliberately
+/// does not replace the full multi-scale Linux registration: it gives timely
+/// guidance without ever activating a provisional transform.
+final class SpatialCalibrationReadinessEvaluator: @unchecked Sendable {
+    private struct GridKey: Hashable {
+        let x: Int32
+        let y: Int32
+        let z: Int32
+    }
+
+    private struct Transform {
+        var yaw: Float
+        var translation: SIMD3<Float>
+
+        func apply(_ point: SIMD3<Float>) -> SIMD3<Float> {
+            let cosine = cos(yaw), sine = sin(yaw)
+            return SIMD3<Float>(
+                cosine * point.x - sine * point.y,
+                sine * point.x + cosine * point.y,
+                point.z
+            ) + translation
+        }
+
+        func applying(deltaYaw: Float, deltaTranslation: SIMD3<Float>) -> Transform {
+            let cosine = cos(deltaYaw), sine = sin(deltaYaw)
+            let rotatedTranslation = SIMD3<Float>(
+                cosine * translation.x - sine * translation.y,
+                sine * translation.x + cosine * translation.y,
+                translation.z
+            )
+            return Transform(
+                yaw: Self.wrappedAngle(yaw + deltaYaw),
+                translation: rotatedTranslation + deltaTranslation
+            )
+        }
+
+        private static func wrappedAngle(_ value: Float) -> Float {
+            atan2(sin(value), cos(value))
+        }
+    }
+
+    private struct MatchQuality {
+        let transform: Transform
+        let overlap: Float
+        let rmse: Float
+        let score: Float
+    }
+
+    private let cellSize: Float = 0.35
+    private var previousTransform: Transform?
+    private var stableUpdates = 0
+
+    func reset() {
+        previousTransform = nil
+        stableUpdates = 0
+    }
+
+    func evaluate(
+        phone: SpatialPointCloudSnapshot,
+        linux: SpatialPointCloudSnapshot?,
+        trajectory: SpatialScanTrajectory
+    ) -> SpatialCalibrationReadiness {
+        let phonePoints = Self.sample(phone.points, maximum: 1_200)
+        let coverage = Self.coverage(points: phonePoints, originalCount: phone.points.count, trajectory: trajectory)
+        guard let linux, phonePoints.count >= 80 else {
+            previousTransform = nil
+            stableUpdates = 0
+            return SpatialCalibrationReadiness(
+                score: min(coverage.score, 55), coverageScore: coverage.score,
+                phase: coverage.phase,
+                guidance: linux == nil
+                    ? "手机覆盖正在计算；下载 Linux 点云后才能估算统一坐标系就绪度。"
+                    : coverage.guidance,
+                overlapRatio: nil, rmseM: nil, stableUpdates: 0
+            )
+        }
+
+        let target = Self.sample(linux.points, maximum: 6_000)
+        guard target.count >= 80, let match = provisionalRegistration(source: phonePoints, target: target) else {
+            previousTransform = nil
+            stableUpdates = 0
+            return SpatialCalibrationReadiness(
+                score: min(coverage.score, 45), coverageScore: coverage.score,
+                phase: "尚未找到可靠重叠",
+                guidance: "请继续扫描 Linux 雷达也能看到的墙角、门框或桌角。",
+                overlapRatio: 0, rmseM: nil, stableUpdates: 0
+            )
+        }
+
+        updateStability(with: match)
+        let overlapComponent = Self.clamp((match.overlap - 0.15) / 0.40)
+        let rmseComponent = Self.clamp((0.30 - match.rmse) / 0.20)
+        let stabilityComponent = min(Float(stableUpdates) / 3, 1)
+        let registrationScore = 55 * overlapComponent + 30 * rmseComponent + 15 * stabilityComponent
+        var combined = Int((0.45 * Float(coverage.score) + 0.55 * registrationScore).rounded())
+        let ready = coverage.score >= 60 && match.overlap >= 0.35 && match.rmse <= 0.15 && stableUpdates >= 3
+        if ready { combined = max(combined, 85) }
+        // Only the full Linux registration can award 100% and activate a transform.
+        combined = min(combined, 95)
+
+        let phase: String
+        let guidance: String
+        if ready {
+            phase = "可以尝试正式标定"
+            guidance = "重叠、残差和连续稳定性已达到预标定门槛。"
+        } else if coverage.score < 55 {
+            phase = "继续扩大手机扫描覆盖"
+            guidance = coverage.guidance
+        } else if match.overlap < 0.35 {
+            phase = "两侧点云重叠不足"
+            guidance = "请对准并补扫 Linux 雷达清晰可见的静态结构。"
+        } else if match.rmse > 0.15 {
+            phase = "临时配准残差偏大"
+            guidance = "请放慢移动速度，重复覆盖墙角、桌角等清晰边界。"
+        } else {
+            phase = "候选坐标变换正在稳定"
+            guidance = "保持当前原点不变，再从不同方向扫描同一组非对称结构。"
+        }
+        return SpatialCalibrationReadiness(
+            score: combined, coverageScore: coverage.score, phase: phase, guidance: guidance,
+            overlapRatio: match.overlap, rmseM: match.rmse, stableUpdates: stableUpdates
+        )
+    }
+
+    private func updateStability(with match: MatchQuality) {
+        guard match.overlap >= 0.25, match.rmse <= 0.22 else {
+            stableUpdates = 0
+            previousTransform = match.transform
+            return
+        }
+        if let previousTransform {
+            let yawDelta = abs(atan2(
+                sin(match.transform.yaw - previousTransform.yaw),
+                cos(match.transform.yaw - previousTransform.yaw)
+            ))
+            let translationDelta = simd_length(match.transform.translation - previousTransform.translation)
+            stableUpdates = yawDelta <= .pi / 36 && translationDelta <= 0.20
+                ? min(stableUpdates + 1, 9)
+                : 0
+        } else {
+            stableUpdates = 0
+        }
+        previousTransform = match.transform
+    }
+
+    private func provisionalRegistration(
+        source: [SIMD3<Float>], target: [SIMD3<Float>]
+    ) -> MatchQuality? {
+        let grid = makeGrid(target)
+        let sourceCenter = Self.center(source)
+        let targetCenter = Self.center(target)
+        var best: MatchQuality?
+        for degrees in stride(from: -180, to: 180, by: 45) {
+            let yaw = Float(degrees) * .pi / 180
+            let initial = Transform(yaw: yaw, translation: .zero)
+            var transform = Transform(
+                yaw: yaw,
+                translation: targetCenter - initial.apply(sourceCenter)
+            )
+            for threshold in [1.00, 0.55, 0.35] as [Float] {
+                guard let update = fittedUpdate(
+                    source: source, target: target, grid: grid,
+                    transform: transform, maximumDistance: threshold
+                ) else { break }
+                transform = transform.applying(
+                    deltaYaw: update.yaw, deltaTranslation: update.translation
+                )
+            }
+            let quality = measure(source: source, target: target, grid: grid, transform: transform)
+            if best == nil || quality.score < best!.score { best = quality }
+        }
+        return best
+    }
+
+    private func fittedUpdate(
+        source: [SIMD3<Float>], target: [SIMD3<Float>], grid: [GridKey: [Int]],
+        transform: Transform, maximumDistance: Float
+    ) -> Transform? {
+        var pairs: [(moved: SIMD3<Float>, target: SIMD3<Float>, distance: Float)] = []
+        pairs.reserveCapacity(source.count)
+        for point in source {
+            let moved = transform.apply(point)
+            if let match = nearest(to: moved, target: target, grid: grid, maximumDistance: maximumDistance) {
+                pairs.append((moved, match.point, sqrt(match.distanceSquared)))
+            }
+        }
+        guard pairs.count >= 24 else { return nil }
+        pairs.sort { $0.distance < $1.distance }
+        let kept = pairs.prefix(max(24, Int(Float(pairs.count) * 0.75)))
+        let count = Float(kept.count)
+        let movedCenter = kept.reduce(SIMD3<Float>.zero) { $0 + $1.moved } / count
+        let targetCenter = kept.reduce(SIMD3<Float>.zero) { $0 + $1.target } / count
+        var dot: Float = 0
+        var cross: Float = 0
+        for pair in kept {
+            let first = pair.moved - movedCenter
+            let second = pair.target - targetCenter
+            dot += first.x * second.x + first.y * second.y
+            cross += first.x * second.y - first.y * second.x
+        }
+        let yaw = atan2(cross, dot)
+        let cosine = cos(yaw), sine = sin(yaw)
+        let rotatedCenter = SIMD3<Float>(
+            cosine * movedCenter.x - sine * movedCenter.y,
+            sine * movedCenter.x + cosine * movedCenter.y,
+            movedCenter.z
+        )
+        return Transform(yaw: yaw, translation: targetCenter - rotatedCenter)
+    }
+
+    private func measure(
+        source: [SIMD3<Float>], target: [SIMD3<Float>], grid: [GridKey: [Int]],
+        transform: Transform
+    ) -> MatchQuality {
+        let inlierThreshold: Float = 0.20
+        let searchDistance: Float = 0.60
+        var squaredInliers: Float = 0
+        var inliers = 0
+        var cappedSquared: Float = 0
+        for point in source {
+            let moved = transform.apply(point)
+            if let match = nearest(to: moved, target: target, grid: grid, maximumDistance: searchDistance) {
+                let distanceSquared = match.distanceSquared
+                cappedSquared += min(distanceSquared, inlierThreshold * inlierThreshold)
+                if distanceSquared <= inlierThreshold * inlierThreshold {
+                    inliers += 1
+                    squaredInliers += distanceSquared
+                }
+            } else {
+                cappedSquared += inlierThreshold * inlierThreshold
+            }
+        }
+        let overlap = Float(inliers) / Float(max(source.count, 1))
+        let rmse = inliers > 0 ? sqrt(squaredInliers / Float(inliers)) : .infinity
+        return MatchQuality(
+            transform: transform, overlap: overlap, rmse: rmse,
+            score: cappedSquared / Float(max(source.count, 1))
+        )
+    }
+
+    private func makeGrid(_ points: [SIMD3<Float>]) -> [GridKey: [Int]] {
+        var grid: [GridKey: [Int]] = [:]
+        grid.reserveCapacity(points.count)
+        for (index, point) in points.enumerated() {
+            grid[key(for: point), default: []].append(index)
+        }
+        return grid
+    }
+
+    private func nearest(
+        to point: SIMD3<Float>, target: [SIMD3<Float>], grid: [GridKey: [Int]],
+        maximumDistance: Float
+    ) -> (point: SIMD3<Float>, distanceSquared: Float)? {
+        let centerKey = key(for: point)
+        let radius = Int32(ceil(maximumDistance / cellSize))
+        let limit = maximumDistance * maximumDistance
+        var bestIndex: Int?
+        var bestSquared = limit
+        for x in -radius...radius {
+            for y in -radius...radius {
+                for z in -radius...radius {
+                    let candidateKey = GridKey(
+                        x: centerKey.x + x, y: centerKey.y + y, z: centerKey.z + z
+                    )
+                    guard let indices = grid[candidateKey] else { continue }
+                    for index in indices {
+                        let squared = simd_length_squared(target[index] - point)
+                        if squared < bestSquared {
+                            bestSquared = squared
+                            bestIndex = index
+                        }
+                    }
+                }
+            }
+        }
+        guard let bestIndex else { return nil }
+        return (target[bestIndex], bestSquared)
+    }
+
+    private func key(for point: SIMD3<Float>) -> GridKey {
+        GridKey(
+            x: Int32(floor(point.x / cellSize)),
+            y: Int32(floor(point.y / cellSize)),
+            z: Int32(floor(point.z / cellSize))
+        )
+    }
+
+    private static func coverage(
+        points: [SIMD3<Float>], originalCount: Int, trajectory: SpatialScanTrajectory
+    ) -> (score: Int, phase: String, guidance: String) {
+        guard points.count >= 3 else {
+            return (0, "等待有效深度点", "请将相机对准 0.3–5 米内有纹理的静态表面。")
+        }
+        var minimum = points[0]
+        var maximum = points[0]
+        var occupied: Set<GridKey> = []
+        for point in points {
+            minimum = simd_min(minimum, point)
+            maximum = simd_max(maximum, point)
+            occupied.insert(GridKey(
+                x: Int32(floor(point.x / 0.5)),
+                y: Int32(floor(point.y / 0.5)),
+                z: Int32(floor(point.z / 0.5))
+            ))
+        }
+        let span = maximum - minimum
+        let pointPart = 25 * clamp(Float(originalCount) / 4_000)
+        let spanPart = 25 * (
+            clamp(span.x / 2.0) + clamp(span.y / 2.0) + clamp(span.z / 1.5)
+        ) / 3
+        let occupancyPart = 25 * clamp(Float(occupied.count) / 28)
+        let travelPart = 15 * clamp(trajectory.travelDistance / 1.5)
+        let viewpointPart = 10 * clamp(trajectory.horizontalSpan / 1.0)
+        let score = min(100, Int((pointPart + spanPart + occupancyPart + travelPart + viewpointPart).rounded()))
+        if originalCount < 800 {
+            return (score, "有效点仍然较少", "请放慢移动速度并靠近墙面、桌面等静态表面。")
+        }
+        if span.z < 1.0 {
+            return (score, "高度层覆盖不足", "请同时补扫地面、桌面和较高墙面。")
+        }
+        if min(span.x, span.y) < 1.0 {
+            return (score, "平面方向较单一", "请转向另一面墙，并覆盖墙角或门框。")
+        }
+        if trajectory.travelDistance < 0.8 {
+            return (score, "观察视角不足", "请绕目标结构移动，从不同方向重复扫描。")
+        }
+        return (score, "手机扫描覆盖良好", "继续覆盖非对称结构，以提高与 Linux 点云的唯一匹配性。")
+    }
+
+    private static func center(_ points: [SIMD3<Float>]) -> SIMD3<Float> {
+        points.reduce(SIMD3<Float>.zero, +) / Float(max(points.count, 1))
+    }
+
+    private static func sample(_ points: [SIMD3<Float>], maximum: Int) -> [SIMD3<Float>] {
+        guard points.count > maximum else { return points }
+        let step = max(1, points.count / maximum)
+        return stride(from: 0, to: points.count, by: step).prefix(maximum).map { points[$0] }
+    }
+
+    private static func clamp(_ value: Float) -> Float {
+        max(0, min(1, value))
+    }
+}
+
 private struct SpatialVoxelKey: Hashable {
     let x: Int32
     let y: Int32

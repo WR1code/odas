@@ -97,6 +97,7 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
     @Published private(set) var phoneSpatialPreview: SpatialPointCloudSnapshot?
     @Published private(set) var linuxLidarMap: SpatialPointCloudSnapshot?
     @Published private(set) var linuxLidarMapStatus = "尚未下载 Linux 雷达地图"
+    @Published private(set) var spatialReadiness = SpatialCalibrationReadiness.notStarted
 
     private let poseLock = NSLock()
     private var latestPose = DevicePose.unavailable
@@ -108,6 +109,19 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
     private var resetRequested = true
     private let spatialCloud = SpatialPointCloudAccumulator()
     private var lastSpatialPreviewTimestamp: TimeInterval = -.infinity
+    private var lastReadinessTimestamp: TimeInterval = -.infinity
+    private let readinessQueue = DispatchQueue(
+        label: "com.avtwin.ios.spatial-readiness", qos: .userInitiated
+    )
+    private let readinessEvaluator = SpatialCalibrationReadinessEvaluator()
+    private let readinessLock = NSLock()
+    private var readinessGeneration = 0
+    private var evaluationRunningGeneration: Int?
+    private var latestLinuxMapForReadiness: SpatialPointCloudSnapshot?
+    private var scanLastPosition: SIMD3<Float>?
+    private var scanMinimumPosition: SIMD3<Float>?
+    private var scanMaximumPosition: SIMD3<Float>?
+    private var scanTravelDistance: Float = 0
 
     func snapshot() -> DevicePose {
         poseLock.lock()
@@ -135,6 +149,24 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
         spatialScanPointCount = 0
         phoneSpatialPreview = nil
         lastSpatialPreviewTimestamp = -.infinity
+        lastReadinessTimestamp = -.infinity
+        readinessLock.lock()
+        readinessGeneration += 1
+        scanLastPosition = nil
+        scanMinimumPosition = nil
+        scanMaximumPosition = nil
+        scanTravelDistance = 0
+        let hasLinuxMap = latestLinuxMapForReadiness != nil
+        readinessLock.unlock()
+        let evaluator = readinessEvaluator
+        readinessQueue.async { evaluator.reset() }
+        spatialReadiness = SpatialCalibrationReadiness(
+            score: 0, coverageScore: 0, phase: "正在建立扫描覆盖",
+            guidance: !hasLinuxMap
+                ? "建议先下载 Linux 点云；当前先评估手机扫描覆盖。"
+                : "请缓慢扫描双方都能看到的墙角、门框和桌角。",
+            overlapRatio: nil, rmseM: nil, stableUpdates: 0
+        )
         spatialCalibrationStatus = "正在扫描：请缓慢绕场并覆盖墙角、桌面和非对称物体"
     }
 
@@ -144,6 +176,7 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
         spatialScanPointCount = spatialCloud.count
         phoneSpatialPreview = spatialCloud.snapshot()
         spatialCalibrationStatus = "扫描已停止，共 \(spatialCloud.count) 个体素点"
+        if let preview = phoneSpatialPreview { scheduleReadinessEvaluation(phone: preview) }
     }
 
     func uploadSpatialScan(host: String, port: UInt16 = 5010) {
@@ -188,10 +221,63 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
                 switch result {
                 case .success(let cloud):
                     self.linuxLidarMap = cloud
+                    self.readinessLock.lock()
+                    self.latestLinuxMapForReadiness = cloud
+                    self.readinessLock.unlock()
                     self.linuxLidarMapStatus = "Linux 雷达点云：\(cloud.points.count) 点，frame=\(cloud.frameID)"
+                    if let preview = self.phoneSpatialPreview {
+                        self.scheduleReadinessEvaluation(phone: preview)
+                    }
                 case .failure(let error):
                     self.linuxLidarMapStatus = "Linux 雷达点云下载失败：\(error.localizedDescription)"
                 }
+            }
+        }
+    }
+
+    private func recordSpatialTrajectory(_ position: SIMD3<Float>) {
+        readinessLock.lock()
+        defer { readinessLock.unlock() }
+        if let previous = scanLastPosition {
+            let step = simd_length(position - previous)
+            // Ignore AR relocalization jumps and sub-centimetre camera jitter.
+            if step >= 0.01, step <= 0.50 { scanTravelDistance += step }
+        }
+        scanLastPosition = position
+        scanMinimumPosition = scanMinimumPosition.map { simd_min($0, position) } ?? position
+        scanMaximumPosition = scanMaximumPosition.map { simd_max($0, position) } ?? position
+    }
+
+    private func scheduleReadinessEvaluation(phone: SpatialPointCloudSnapshot) {
+        readinessLock.lock()
+        let generation = readinessGeneration
+        guard evaluationRunningGeneration == nil else {
+            readinessLock.unlock()
+            return
+        }
+        let linux = latestLinuxMapForReadiness
+        let minimum = scanMinimumPosition ?? .zero
+        let maximum = scanMaximumPosition ?? minimum
+        let horizontalDelta = maximum - minimum
+        let trajectory = SpatialScanTrajectory(
+            travelDistance: scanTravelDistance,
+            horizontalSpan: hypot(horizontalDelta.x, horizontalDelta.y)
+        )
+        evaluationRunningGeneration = generation
+        readinessLock.unlock()
+
+        let evaluator = readinessEvaluator
+        readinessQueue.async { [weak self] in
+            let result = evaluator.evaluate(phone: phone, linux: linux, trajectory: trajectory)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.readinessLock.lock()
+                let isCurrent = self.readinessGeneration == generation
+                if self.evaluationRunningGeneration == generation {
+                    self.evaluationRunningGeneration = nil
+                }
+                self.readinessLock.unlock()
+                if isCurrent { self.spatialReadiness = result }
             }
         }
     }
@@ -279,11 +365,16 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
         // gravity-aligned Z-up axes expressed in ARKit world coordinates.
         let translated = referenceBasis.transpose * relative
         if spatialCloud.isScanning {
+            recordSpatialTrajectory(translated)
             spatialCloud.add(frame: frame, origin: referenceOrigin, basis: referenceBasis)
             let count = spatialCloud.count
             let shouldRefreshPreview = frame.timestamp - lastSpatialPreviewTimestamp >= 0.50
             let preview = shouldRefreshPreview ? spatialCloud.snapshot() : nil
             if shouldRefreshPreview { lastSpatialPreviewTimestamp = frame.timestamp }
+            if let preview, frame.timestamp - lastReadinessTimestamp >= 2.0 {
+                lastReadinessTimestamp = frame.timestamp
+                scheduleReadinessEvaluation(phone: preview)
+            }
             DispatchQueue.main.async { [weak self] in
                 self?.spatialScanPointCount = count
                 if let preview { self?.phoneSpatialPreview = preview }

@@ -51,6 +51,8 @@ jobs:
         run: >-
           python3 -m pytest -q
           avtwin_linux/tests/test_continuous.py
+          avtwin_linux/tests/test_pose.py
+          avtwin_linux/tests/test_shared_origin.py
           avtwin_linux/tests/test_spatial_calibration.py
           avtwin_linux/tests/test_spatial_capture_control.py
 

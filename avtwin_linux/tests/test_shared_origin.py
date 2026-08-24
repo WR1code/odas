@@ -1,7 +1,12 @@
 import math
+import json
+import socket
+import time
 
 import numpy as np
+import pytest
 
+from avtwin_linux.pose import PoseSample, UdpPoseProvider
 from avtwin_linux.shared_origin import configure_shared_origin
 
 
@@ -81,3 +86,37 @@ def test_second_switch_uses_the_post_reset_phone_source_transform() -> None:
     )
     assert np.allclose(second["phone_position_m"], expected_shared_phone[:3])
     assert np.allclose(second["linux_microphone_position_m"], [0, 0, 0])
+
+
+def test_udp_pose_provider_rebases_to_explicit_microphone_origin() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    provider = UdpPoseProvider("127.0.0.1", port, max_age_s=1.0)
+    provider.start()
+    try:
+        message = {
+            "protocol": "AVTWIN_POSE_V1", "type": "lidar_pose",
+            "position_m": [1.0, 2.0, 3.0],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "frame_id": "camera_init", "tracking_status": "TRACKING",
+        }
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+            sender.sendto(json.dumps(message).encode(), ("127.0.0.1", port))
+        deadline = time.monotonic() + 1.0
+        while provider.raw_latest() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert provider.raw_latest() is not None
+        provider.set_origin_pose(PoseSample(
+            timestamp_ns=time.monotonic_ns(),
+            position_m=(1.5, 2.0, 3.0),
+            orientation_xyzw=(0.0, 0.0, 0.0, 1.0),
+            frame_id="camera_init",
+            child_frame_id="uma8_acoustic_center",
+        ), frame_id="camera_init/linux_microphone_origin")
+        latest = provider.latest()
+        assert latest is not None
+        assert latest.frame_id == "camera_init/linux_microphone_origin"
+        assert latest.position_m == pytest.approx((-0.5, 0.0, 0.0))
+    finally:
+        provider.stop()

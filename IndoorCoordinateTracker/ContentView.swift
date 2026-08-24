@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @FocusState private var isInputFocused: Bool
     @ObservedObject var poseTracker: PoseTracker
     @StateObject private var poseSelection: PoseSelectionStore
     @StateObject private var responder: AcousticResponder
@@ -16,6 +17,7 @@ struct ContentView: View {
     @AppStorage("calibrationPort") private var calibrationPort = "5010"
     @AppStorage("saveDebugAudio") private var saveDebugAudio = false
     @AppStorage("linuxRemoteStartEnabled") private var linuxRemoteStartEnabled = true
+    @AppStorage("sharedOriginMode") private var sharedOriginMode = "linux_microphone"
     @AppStorage("manualX") private var manualX = "0"
     @AppStorage("manualY") private var manualY = "0"
     @AppStorage("manualZ") private var manualZ = "0"
@@ -69,6 +71,7 @@ struct ContentView: View {
                 }
                 .padding(.horizontal, 14).padding(.vertical, 10)
             }
+            .scrollDismissesKeyboard(.interactively)
         }
         .onAppear {
             refreshNetworkSnapshot()
@@ -86,12 +89,22 @@ struct ContentView: View {
                 poseTracker.downloadLinuxLidarMap(host: linuxHost, port: port)
             }
         }
+        .onChange(of: responder.phoneOriginResetGeneration) { _, _ in
+            poseTracker.resetOrigin()
+            visualOriginRevision += 1
+        }
         .onDisappear { responder.shutdown() }
         .fileImporter(isPresented: $isImportingFile, allowedContentTypes: importTarget.allowedContentTypes) { result in
             handleImportResult(result, target: importTarget)
         }
         .fullScreenCover(item: $selectedPointCloud) { selection in
             PointCloudViewerScreen(selection: selection)
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("完成") { isInputFocused = false }
+            }
         }
     }
 
@@ -155,14 +168,18 @@ struct ContentView: View {
                 HStack { coordinate("X", pose.position.x); coordinate("Y", pose.position.y); coordinate("Z", pose.position.z) }
                 Text(String(format: "yaw %.1f°  pitch %.1f°  roll %.1f° | %@", pose.yawDegrees, pose.pitchDegrees, pose.rollDegrees, poseTracker.statusText))
                     .font(.caption.monospacedDigit())
-                XYHeadingView(yawDegrees: pose.yawDegrees)
+                XYHeadingView(yawDegrees: responder.sharedYawDegrees(for: pose))
                     .frame(height: 150)
                 BubbleLevelView(pitchDegrees: pose.pitchDegrees, rollDegrees: pose.rollDegrees)
                     .frame(height: 205)
                 VStack(alignment: .leading, spacing: 5) {
                     Label("相机预览", systemImage: "camera.fill").font(.caption.bold())
                     ZStack {
-                        ARCameraView(poseTracker: poseTracker, visualOriginRevision: visualOriginRevision)
+                        ARCameraView(
+                            poseTracker: poseTracker,
+                            visualOriginRevision: visualOriginRevision,
+                            sharedCoordinates: responder.sharedVisualization
+                        )
                         Image(systemName: "plus")
                             .font(.system(size: 22, weight: .light))
                             .foregroundStyle(.white.opacity(0.8))
@@ -190,13 +207,28 @@ struct ContentView: View {
                         }
                     }
                 }
-                Button {
-                    poseTracker.resetOrigin()
-                    visualOriginRevision += 1
-                } label: {
-                    Label("同时设立坐标原点与 AR 可视原点", systemImage: "scope").frame(maxWidth: .infinity)
+                Picker("共享原点", selection: $sharedOriginMode) {
+                    Text("Linux / UMA-8 原点").tag("linux_microphone")
+                    Text("手机当前位置原点").tag("iphone_current")
                 }
-                    .buttonStyle(.bordered).disabled(pose.trackingState != "tracking")
+                .pickerStyle(.segmented)
+                Button {
+                    responder.requestSharedOrigin(mode: sharedOriginMode)
+                } label: {
+                    Label(
+                        sharedOriginMode == "linux_microphone"
+                            ? "命令 Linux：以 UMA-8 中心设为共享零点"
+                            : "以手机当前位置重置共享零点与 AR 原点",
+                        systemImage: "scope"
+                    ).frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(
+                    pose.trackingState != "tracking" || responder.isRunning
+                    || poseTracker.isSpatialScanning
+                    || !configurationValid || !linuxRemoteStartEnabled
+                )
+                sharedCoordinateSummary(pose: pose)
             } else {
                 HStack { numberField("X m", $manualX); numberField("Y m", $manualY); numberField("Z m", $manualZ) }
                 HStack { numberField("Yaw°", $manualYaw); numberField("Pitch°", $manualPitch); numberField("Roll°", $manualRoll) }
@@ -220,17 +252,46 @@ struct ContentView: View {
                 Label(warning, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption2).foregroundStyle(.orange)
             }
-            TextField("Linux 当前网络 IPv4", text: $linuxHost).keyboardType(.numbersAndPunctuation).fieldStyle()
+            TextField("Linux 当前网络 IPv4", text: $linuxHost).keyboardType(.numbersAndPunctuation).focused($isInputFocused).fieldStyle()
             HStack {
-                TextField("iPhone ARM 端口", text: $controlPort).keyboardType(.numberPad).fieldStyle()
-                TextField("Linux 结果端口", text: $resultPort).keyboardType(.numberPad).fieldStyle()
-                TextField("标定 HTTP", text: $calibrationPort).keyboardType(.numberPad).fieldStyle()
+                TextField("iPhone ARM 端口", text: $controlPort).keyboardType(.numberPad).focused($isInputFocused).fieldStyle()
+                TextField("Linux 结果端口", text: $resultPort).keyboardType(.numberPad).focused($isInputFocused).fieldStyle()
+                TextField("标定 HTTP", text: $calibrationPort).keyboardType(.numberPad).focused($isInputFocused).fieldStyle()
             }
             Toggle("允许 Linux 在空闲时远程启动 iPhone 会话", isOn: $linuxRemoteStartEnabled)
                 .font(.caption)
             Text(linuxRemoteStartEnabled ? "已开启：空闲时监听控制端口，Linux 可发送 START_CAPTURE。" : "已关闭：空闲时不监听远程启动；仍可在本机手动开始会话。")
                 .font(.caption2).foregroundStyle(.secondary)
         }.disabled(responder.isRunning).card()
+    }
+
+    private func sharedCoordinateSummary(pose: DevicePose) -> some View {
+        let phone = responder.sharedPhonePosition(for: pose)
+        let linux = responder.sharedLinuxPosition
+        return VStack(alignment: .leading, spacing: 5) {
+            Text(responder.sharedOriginStatus)
+                .font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+            HStack {
+                Label("iPhone", systemImage: "iphone")
+                Spacer()
+                Text(positionText(phone)).monospacedDigit()
+            }
+            HStack {
+                Label("Linux / UMA-8", systemImage: "desktopcomputer")
+                Spacer()
+                Text(positionText(linux)).monospacedDigit()
+            }
+            Text("共享 frame：\(responder.sharedFrameID)；AR 中黄色=共享原点，紫色=Linux/UMA-8。")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .font(.caption)
+        .padding(9)
+        .background(.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+    }
+
+    private func positionText(_ position: SIMD3<Double>?) -> String {
+        guard let position else { return "X --  Y --  Z --" }
+        return String(format: "X %+.3f  Y %+.3f  Z %+.3f m", position.x, position.y, position.z)
     }
 
     private var spatialCalibrationCard: some View {
@@ -515,7 +576,7 @@ struct ContentView: View {
         responder.start(config)
     }
     private func coordinate(_ name: String, _ value: Double) -> some View { VStack { Text(name).font(.caption.bold()); Text(String(format: "%+.3f m", value)).font(.caption.monospacedDigit()) }.frame(maxWidth: .infinity).padding(6).background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 7)) }
-    private func numberField(_ label: String, _ value: Binding<String>) -> some View { VStack { Text(label).font(.caption2); TextField("0", text: value).keyboardType(.numbersAndPunctuation).multilineTextAlignment(.center).fieldStyle() }.frame(maxWidth: .infinity) }
+    private func numberField(_ label: String, _ value: Binding<String>) -> some View { VStack { Text(label).font(.caption2); TextField("0", text: value).keyboardType(.numbersAndPunctuation).focused($isInputFocused).multilineTextAlignment(.center).fieldStyle() }.frame(maxWidth: .infinity) }
     private var udpTestButtonTitle: String {
         switch responder.udpTestState {
         case .idle: return "UDP 双向检验"
@@ -632,7 +693,7 @@ private struct XYHeadingView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("XY 坐标系 / 当前平面朝向").font(.caption.bold())
+                Text("共享 XY 坐标系 / iPhone 当前朝向").font(.caption.bold())
                 Spacer()
                 Text(String(format: "%+.1f°", yawDegrees)).font(.caption.monospacedDigit()).foregroundStyle(.cyan)
             }

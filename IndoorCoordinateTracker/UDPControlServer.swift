@@ -9,6 +9,7 @@ final class UDPControlServer: @unchecked Sendable {
     typealias CaptureOnceAckHandler = @Sendable (CaptureOnceAcknowledgement, String) -> Void
     typealias MeasurementQualityHandler = @Sendable (MeasurementQualityResult, String) -> MeasurementQualityAcceptResult
     typealias LidarMapCaptureUpdateHandler = @Sendable (LidarMapCaptureUpdate, String) -> Void
+    typealias SharedOriginUpdateHandler = @Sendable (SharedOriginUpdate, String) -> Void
 
     private let port: UInt16
     private let allowedHost: String
@@ -19,6 +20,7 @@ final class UDPControlServer: @unchecked Sendable {
     private let onCaptureOnceAck: CaptureOnceAckHandler
     private let onMeasurementQuality: MeasurementQualityHandler
     private let onLidarMapCaptureUpdate: LidarMapCaptureUpdateHandler
+    private let onSharedOriginUpdate: SharedOriginUpdateHandler
     private let onLog: @Sendable (String) -> Void
     private let queue = DispatchQueue(label: "com.avtwin.ios.udp-control", qos: .userInitiated)
     private let stateLock = NSLock()
@@ -35,6 +37,7 @@ final class UDPControlServer: @unchecked Sendable {
         onCaptureOnceAck: @escaping CaptureOnceAckHandler,
         onMeasurementQuality: @escaping MeasurementQualityHandler,
         onLidarMapCaptureUpdate: @escaping LidarMapCaptureUpdateHandler,
+        onSharedOriginUpdate: @escaping SharedOriginUpdateHandler,
         onLog: @escaping @Sendable (String) -> Void
     ) {
         self.port = port
@@ -46,6 +49,7 @@ final class UDPControlServer: @unchecked Sendable {
         self.onCaptureOnceAck = onCaptureOnceAck
         self.onMeasurementQuality = onMeasurementQuality
         self.onLidarMapCaptureUpdate = onLidarMapCaptureUpdate
+        self.onSharedOriginUpdate = onSharedOriginUpdate
         self.onLog = onLog
     }
 
@@ -160,6 +164,10 @@ final class UDPControlServer: @unchecked Sendable {
             }
             if let update = LidarMapCaptureUpdate(json: json) {
                 onLidarMapCaptureUpdate(update, source)
+                continue
+            }
+            if let update = SharedOriginUpdate(json: json) {
+                onSharedOriginUpdate(update, source)
                 continue
             }
             if let quality = MeasurementQualityResult(json: json) {

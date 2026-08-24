@@ -1,4 +1,5 @@
 import Foundation
+import simd
 
 enum JSONWire {
     static func decode(_ data: Data) -> [String: Any]? {
@@ -24,6 +25,80 @@ enum JSONWire {
 
     static func strings(_ object: [String: Any], _ key: String) -> [String] {
         object[key] as? [String] ?? []
+    }
+
+    static func doubles(_ object: [String: Any], _ key: String, count: Int) -> [Double]? {
+        guard let values = object[key] as? [NSNumber], values.count == count else { return nil }
+        let result = values.map(\.doubleValue)
+        return result.allSatisfy { $0.isFinite } ? result : nil
+    }
+
+    static func matrix4x4(_ object: [String: Any], _ key: String) -> [[Double]]? {
+        guard let rows = object[key] as? [[NSNumber]], rows.count == 4,
+              rows.allSatisfy({ $0.count == 4 })
+        else { return nil }
+        let result = rows.map { $0.map(\.doubleValue) }
+        return result.flatMap { $0 }.allSatisfy { $0.isFinite } ? result : nil
+    }
+}
+
+struct SharedCoordinateVisualization: Sendable {
+    let mode: String
+    let sharedFrameID: String
+    let phoneSourceFromSharedOrigin: simd_float4x4
+    let phoneSourceFromLinuxMicrophone: simd_float4x4
+
+    static func transform(_ rows: [[Double]]) -> simd_float4x4 {
+        simd_float4x4(columns: (
+            SIMD4<Float>(Float(rows[0][0]), Float(rows[1][0]), Float(rows[2][0]), Float(rows[3][0])),
+            SIMD4<Float>(Float(rows[0][1]), Float(rows[1][1]), Float(rows[2][1]), Float(rows[3][1])),
+            SIMD4<Float>(Float(rows[0][2]), Float(rows[1][2]), Float(rows[2][2]), Float(rows[3][2])),
+            SIMD4<Float>(Float(rows[0][3]), Float(rows[1][3]), Float(rows[2][3]), Float(rows[3][3]))
+        ))
+    }
+}
+
+struct SharedOriginUpdate: Sendable {
+    let commandID: String
+    let accepted: Bool
+    let reason: String
+    let mode: String
+    let sharedFrameID: String
+    let phoneResetRequired: Bool
+    let phonePosition: SIMD3<Double>?
+    let linuxMicrophonePosition: SIMD3<Double>?
+    let sharedFromPhoneSource: [[Double]]?
+    let visualization: SharedCoordinateVisualization?
+
+    init?(json: [String: Any]) {
+        guard JSONWire.string(json, "type") == "shared_origin_set_ack",
+              let version = JSONWire.int64(json, "protocol_version"), version == 1,
+              let commandID = JSONWire.string(json, "command_id"), !commandID.isEmpty,
+              let accepted = JSONWire.bool(json, "accepted")
+        else { return nil }
+        self.commandID = commandID
+        self.accepted = accepted
+        reason = JSONWire.string(json, "reason") ?? "unknown"
+        mode = JSONWire.string(json, "mode") ?? "unknown"
+        sharedFrameID = JSONWire.string(json, "shared_frame_id") ?? "unknown"
+        phoneResetRequired = JSONWire.bool(json, "phone_reset_required") ?? false
+        phonePosition = JSONWire.doubles(json, "phone_position_m", count: 3).map {
+            SIMD3<Double>($0[0], $0[1], $0[2])
+        }
+        linuxMicrophonePosition = JSONWire.doubles(json, "linux_microphone_position_m", count: 3).map {
+            SIMD3<Double>($0[0], $0[1], $0[2])
+        }
+        sharedFromPhoneSource = JSONWire.matrix4x4(json, "shared_from_phone_source")
+        if let shared = JSONWire.matrix4x4(json, "phone_source_from_shared_origin"),
+           let linux = JSONWire.matrix4x4(json, "phone_source_from_linux_microphone") {
+            visualization = SharedCoordinateVisualization(
+                mode: mode, sharedFrameID: sharedFrameID,
+                phoneSourceFromSharedOrigin: SharedCoordinateVisualization.transform(shared),
+                phoneSourceFromLinuxMicrophone: SharedCoordinateVisualization.transform(linux)
+            )
+        } else {
+            visualization = nil
+        }
     }
 }
 

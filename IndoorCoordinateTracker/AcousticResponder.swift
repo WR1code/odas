@@ -50,6 +50,12 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     @Published private(set) var lastLinuxQuality = "尚未收到 Linux 质量结果"
     @Published private(set) var lidarMapCaptureStatus = "Linux 雷达地图：尚未请求"
     @Published private(set) var lidarMapCaptureGeneration = 0
+    @Published private(set) var sharedOriginStatus = "共享原点：尚未设置"
+    @Published private(set) var sharedOriginMode = "unconfigured"
+    @Published private(set) var sharedFrameID = "--"
+    @Published private(set) var sharedLinuxPosition: SIMD3<Double>?
+    @Published private(set) var sharedVisualization: SharedCoordinateVisualization?
+    @Published private(set) var phoneOriginResetGeneration = 0
 
     private struct CaptureAnchor { let sample: Int64; let hostTime: UInt64 }
     private let poseSnapshot: @Sendable () -> DevicePose
@@ -78,6 +84,11 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     private var pendingReply: (session: String, measurement: Int64, event: String, semaphore: DispatchSemaphore)?
     private var pendingCaptureRequestID: String?
     private var pendingLidarMapCommandID: String?
+    private var pendingSharedOriginCommandID: String?
+    private var pendingSharedOriginNextSourceEpoch: Int?
+    private let phoneSourceSessionID = UUID().uuidString
+    private var phoneSourceEpoch = 0
+    private var sharedFromPhoneSourceRows: [[Double]]?
     private var lidarMapAckReceived = false
     private var pendingStartupCommandID: String?
     private var remoteStopPending = false
@@ -313,6 +324,146 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             }
         }
         appendLog("LIDAR_MAP_CAPTURE_UPDATE from=\(source) type=\(update.messageType) command=\(update.commandID) state=\(update.state) accepted=\(update.accepted)")
+    }
+
+    func requestSharedOrigin(mode: String) {
+        guard let config = preparedConfiguration else {
+            DispatchQueue.main.async { self.sharedOriginStatus = "请先配置 Linux 网络和空闲控制监听" }
+            return
+        }
+        stateLock.lock(); let running = runningValue; stateLock.unlock()
+        guard !running else {
+            DispatchQueue.main.async { self.sharedOriginStatus = "请先停止声学会话再切换共享原点" }
+            return
+        }
+        guard mode == "linux_microphone" || mode == "iphone_current" else { return }
+        let pose = poseSnapshot()
+        guard pose.trackingState == "tracking", pose.source == "ios_arkit_world_tracking" else {
+            DispatchQueue.main.async { self.sharedOriginStatus = "ARKit 尚未稳定，不能设置共享原点" }
+            return
+        }
+        let commandID = UUID().uuidString
+        let yawRadians = pose.yawDegrees * .pi / 180
+        stateLock.lock()
+        let sourceEpoch = phoneSourceEpoch
+        stateLock.unlock()
+        let nextSourceEpoch = mode == "iphone_current" ? sourceEpoch + 1 : sourceEpoch
+        let sourceID = "\(phoneSourceSessionID):\(sourceEpoch)"
+        let nextSourceID = "\(phoneSourceSessionID):\(nextSourceEpoch)"
+        let request: [String: Any] = [
+            "type": "shared_origin_set_request", "protocol_version": 1,
+            "command_id": commandID,
+            "linux_result_port": Int(config.resultPort),
+            "mobile_control_port": Int(config.controlPort),
+            "mode": mode,
+            "phone_source_id": sourceID,
+            "phone_source_after_reset_id": nextSourceID,
+            "phone_origin_pose": [
+                "frame_id": pose.frameID,
+                "position_m": [pose.position.x, pose.position.y, pose.position.z],
+                "orientation_xyzw": [0.0, 0.0, sin(yawRadians / 2), cos(yawRadians / 2)],
+            ],
+            "sender": "ios",
+        ]
+        stateLock.lock()
+        pendingSharedOriginCommandID = commandID
+        pendingSharedOriginNextSourceEpoch = nextSourceEpoch
+        stateLock.unlock()
+        DispatchQueue.main.async {
+            self.sharedOriginStatus = mode == "linux_microphone"
+                ? "正在请求以 Linux/UMA-8 为原点…"
+                : "正在请求以手机当前位置为原点…"
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            for attempt in 1...3 {
+                self.stateLock.lock()
+                let pending = self.pendingSharedOriginCommandID == commandID
+                self.stateLock.unlock()
+                guard pending else { return }
+                do {
+                    _ = try UDPControlServer.sendJSON(
+                        request, host: config.linuxHost, port: config.resultPort
+                    )
+                    self.appendLog("SHARED_ORIGIN_REQUEST_SENT command=\(commandID) mode=\(mode) attempt=\(attempt)/3")
+                } catch {
+                    self.appendLog("SHARED_ORIGIN_REQUEST_FAILED command=\(commandID) error=\(error.localizedDescription)")
+                }
+                if attempt < 3 { Thread.sleep(forTimeInterval: 0.15) }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(3)) {
+                self.stateLock.lock()
+                let timedOut = self.pendingSharedOriginCommandID == commandID
+                if timedOut {
+                    self.pendingSharedOriginCommandID = nil
+                    self.pendingSharedOriginNextSourceEpoch = nil
+                }
+                self.stateLock.unlock()
+                if timedOut {
+                    DispatchQueue.main.async { self.sharedOriginStatus = "Linux 共享原点 ACK 超时" }
+                }
+            }
+        }
+    }
+
+    func sharedPhonePosition(for pose: DevicePose) -> SIMD3<Double>? {
+        stateLock.lock(); let rows = sharedFromPhoneSourceRows; stateLock.unlock()
+        guard let rows else { return nil }
+        return SIMD3<Double>(
+            rows[0][0] * pose.position.x + rows[0][1] * pose.position.y + rows[0][2] * pose.position.z + rows[0][3],
+            rows[1][0] * pose.position.x + rows[1][1] * pose.position.y + rows[1][2] * pose.position.z + rows[1][3],
+            rows[2][0] * pose.position.x + rows[2][1] * pose.position.y + rows[2][2] * pose.position.z + rows[2][3]
+        )
+    }
+
+    func sharedYawDegrees(for pose: DevicePose) -> Double {
+        stateLock.lock(); let rows = sharedFromPhoneSourceRows; stateLock.unlock()
+        guard let rows else { return pose.yawDegrees }
+        let yaw = pose.yawDegrees * .pi / 180
+        let sourceForwardX = cos(yaw)
+        let sourceForwardY = sin(yaw)
+        let sharedForwardX = rows[0][0] * sourceForwardX + rows[0][1] * sourceForwardY
+        let sharedForwardY = rows[1][0] * sourceForwardX + rows[1][1] * sourceForwardY
+        return atan2(sharedForwardY, sharedForwardX) * 180 / .pi
+    }
+
+    private func receiveSharedOriginUpdate(_ update: SharedOriginUpdate, source: String) {
+        stateLock.lock()
+        let matches = pendingSharedOriginCommandID == update.commandID
+        let nextSourceEpoch = matches ? pendingSharedOriginNextSourceEpoch : nil
+        if matches {
+            pendingSharedOriginCommandID = nil
+            pendingSharedOriginNextSourceEpoch = nil
+        }
+        if matches, update.accepted {
+            sharedFromPhoneSourceRows = update.sharedFromPhoneSource
+            if update.phoneResetRequired, let nextSourceEpoch {
+                phoneSourceEpoch = nextSourceEpoch
+            }
+        }
+        stateLock.unlock()
+        guard matches else {
+            appendLog("SHARED_ORIGIN_ACK_IGNORED command=\(update.commandID) from=\(source)")
+            return
+        }
+        DispatchQueue.main.async {
+            guard update.accepted else {
+                self.sharedOriginStatus = "共享原点设置失败：\(update.reason)"
+                return
+            }
+            self.sharedOriginMode = update.mode
+            self.sharedFrameID = update.sharedFrameID
+            self.sharedLinuxPosition = update.linuxMicrophonePosition
+            self.sharedVisualization = update.visualization
+            let phone = update.phonePosition.map {
+                String(format: "iPhone=(%+.3f,%+.3f,%+.3f)m", $0.x, $0.y, $0.z)
+            } ?? "iPhone=--"
+            let linux = update.linuxMicrophonePosition.map {
+                String(format: "UMA-8=(%+.3f,%+.3f,%+.3f)m", $0.x, $0.y, $0.z)
+            } ?? "UMA-8=--"
+            self.sharedOriginStatus = "已应用 \(update.sharedFrameID) | \(phone) | \(linux)"
+            if update.phoneResetRequired { self.phoneOriginResetGeneration += 1 }
+        }
+        appendLog("SHARED_ORIGIN_ACK_ACCEPTED command=\(update.commandID) mode=\(update.mode) frame=\(update.sharedFrameID)")
     }
 
     func pauseListening() {
@@ -747,6 +898,9 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             },
             onLidarMapCaptureUpdate: { [weak self] update, source in
                 self?.receiveLidarMapCaptureUpdate(update, source: source)
+            },
+            onSharedOriginUpdate: { [weak self] update, source in
+                self?.receiveSharedOriginUpdate(update, source: source)
             },
             onLog: { [weak self] message in self?.appendLog(message) }
         )

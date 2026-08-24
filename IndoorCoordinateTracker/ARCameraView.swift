@@ -4,6 +4,7 @@ import SwiftUI
 struct ARCameraView: UIViewRepresentable {
     @ObservedObject var poseTracker: PoseTracker
     let visualOriginRevision: Int
+    let sharedCoordinates: SharedCoordinateVisualization?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -14,6 +15,8 @@ struct ARCameraView: UIViewRepresentable {
         view.automaticallyUpdatesLighting = true
         view.rendersCameraGrain = true
         view.scene.rootNode.addChildNode(context.coordinator.originNode)
+        context.coordinator.originNode.addChildNode(context.coordinator.sharedOriginNode)
+        context.coordinator.originNode.addChildNode(context.coordinator.linuxCoordinateNode)
         view.scene.rootNode.addChildNode(context.coordinator.connectorNode)
         view.scene.rootNode.addChildNode(context.coordinator.distanceNode)
         view.scene.rootNode.addChildNode(context.coordinator.capturePointsNode)
@@ -25,6 +28,7 @@ struct ARCameraView: UIViewRepresentable {
 
     func updateUIView(_ uiView: ARSCNView, context: Context) {
         context.coordinator.syncCapturePoints(poseTracker.capturePoints)
+        context.coordinator.syncSharedCoordinates(sharedCoordinates)
         if context.coordinator.lastRevision != visualOriginRevision {
             context.coordinator.lastRevision = visualOriginRevision
             context.coordinator.placeOriginAtCamera(in: uiView)
@@ -46,7 +50,15 @@ struct ARCameraView: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, ARSCNViewDelegate {
-        fileprivate let originNode = ARCoordinateOriginNode()
+        fileprivate let originNode = ARCoordinateOriginNode(
+            title: "手机 AR 源原点", centerColor: .white, axisLength: 0.22
+        )
+        fileprivate let sharedOriginNode = ARCoordinateOriginNode(
+            title: "共享原点", centerColor: .systemYellow, axisLength: 0.18
+        )
+        fileprivate let linuxCoordinateNode = ARCoordinateOriginNode(
+            title: "Linux / UMA-8", centerColor: .systemPurple, axisLength: 0.15
+        )
         let connectorNode: SCNNode = {
             let cylinder = SCNCylinder(radius: 0.004, height: 0.001)
             cylinder.firstMaterial?.diffuse.contents = UIColor.systemYellow
@@ -69,6 +81,18 @@ struct ARCameraView: UIViewRepresentable {
         private var hasOrigin = false
         private var renderedCaptureIDs = Set<UUID>()
         private var renderedCaptureQuality: [UUID: CapturePointQuality] = [:]
+
+        func syncSharedCoordinates(_ value: SharedCoordinateVisualization?) {
+            guard let value else {
+                sharedOriginNode.isHidden = true
+                linuxCoordinateNode.isHidden = true
+                return
+            }
+            sharedOriginNode.isHidden = false
+            linuxCoordinateNode.isHidden = false
+            sharedOriginNode.simdTransform = value.phoneSourceFromSharedOrigin
+            linuxCoordinateNode.simdTransform = value.phoneSourceFromLinuxMicrophone
+        }
 
         func syncCapturePoints(_ points: [CapturePoint]) {
             let desiredIDs = Set(points.map(\.id))
@@ -107,7 +131,9 @@ struct ARCameraView: UIViewRepresentable {
             if pendingInitialPlacement || !hasOrigin { placeOriginAtCamera(in: view) }
             guard hasOrigin else { return }
             let cameraPosition = SIMD3<Float>(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
-            updateConnector(from: originPosition, to: cameraPosition)
+            let displayedOrigin = sharedOriginNode.isHidden
+                ? originPosition : sharedOriginNode.presentation.simdWorldPosition
+            updateConnector(from: displayedOrigin, to: cameraPosition)
         }
 
         private func updateConnector(from origin: SIMD3<Float>, to current: SIMD3<Float>) {
@@ -123,7 +149,7 @@ struct ARCameraView: UIViewRepresentable {
             connectorNode.simdOrientation = simd_quatf(from: SIMD3<Float>(0, 1, 0), to: simd_normalize(vector))
             distanceNode.simdWorldPosition = (origin + current) / 2 + SIMD3<Float>(0, 0.045, 0)
             if let text = distanceNode.geometry as? SCNText {
-                text.string = String(format: "原点 ↔ 当前 %.3f m", distance)
+                text.string = String(format: "共享原点 ↔ 当前 %.3f m", distance)
                 let bounds = text.boundingBox
                 distanceNode.pivot = SCNMatrix4MakeTranslation((bounds.min.x + bounds.max.x) / 2, bounds.min.y, 0)
             }
@@ -195,16 +221,24 @@ struct ARCameraView: UIViewRepresentable {
 /// A world-space origin marker placed at the camera's exact AR position when
 /// reset. It is not attached to the camera, so it remains there as the user moves.
 private final class ARCoordinateOriginNode: SCNNode {
-    override init() {
+    init(title: String, centerColor: UIColor, axisLength: CGFloat) {
         super.init()
         // Geometry is authored in local FLU axes. The node is rotated to the
         // reset-time horizontal phone heading when the origin is placed.
-        addChildNode(Self.axis(length: 0.22, radius: 0.006, color: .systemRed, axis: .x, label: "X"))
-        addChildNode(Self.axis(length: 0.22, radius: 0.006, color: .systemGreen, axis: .y, label: "Y"))
-        addChildNode(Self.axis(length: 0.22, radius: 0.006, color: .systemBlue, axis: .z, label: "Z"))
+        addChildNode(Self.axis(length: axisLength, radius: 0.006, color: .systemRed, axis: .x, label: "X"))
+        addChildNode(Self.axis(length: axisLength, radius: 0.006, color: .systemGreen, axis: .y, label: "Y"))
+        addChildNode(Self.axis(length: axisLength, radius: 0.006, color: .systemBlue, axis: .z, label: "Z"))
         let center = SCNSphere(radius: 0.014)
-        center.firstMaterial?.diffuse.contents = UIColor.white
+        center.firstMaterial?.diffuse.contents = centerColor
         addChildNode(SCNNode(geometry: center))
+        let titleGeometry = SCNText(string: title, extrusionDepth: 0.1)
+        titleGeometry.font = .boldSystemFont(ofSize: 7)
+        titleGeometry.firstMaterial?.diffuse.contents = centerColor
+        let titleNode = SCNNode(geometry: titleGeometry)
+        titleNode.scale = SCNVector3(0.005, 0.005, 0.005)
+        titleNode.position = SCNVector3(0, -0.055, 0)
+        titleNode.constraints = [SCNBillboardConstraint()]
+        addChildNode(titleNode)
     }
 
     required init?(coder: NSCoder) { super.init(coder: coder) }

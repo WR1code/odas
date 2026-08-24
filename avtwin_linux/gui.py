@@ -1099,6 +1099,7 @@ class ControllerGui:
                 "accepted": True, "reason": "shared_origin_applied",
                 "mode": result["mode"],
                 "shared_frame_id": result["shared_frame_id"],
+                "calibration_signature": active_signature,
                 "phone_reset_required": result["phone_reset_required"],
                 "phone_position_m": phone,
                 "linux_microphone_position_m": linux,

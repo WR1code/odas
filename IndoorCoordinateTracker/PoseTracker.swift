@@ -197,11 +197,24 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
                             let quality = calibration?["quality"] as? [String: Any]
                             let accepted = quality?["accepted"] as? Bool ?? false
                             let rmse = quality?["rmse_m"] as? Double
+                            let inlierRatio = quality?["inlier_ratio"] as? Double
                             let reason = quality?["reason"] as? String ?? (response["reason"] as? String ?? "等待雷达地图")
                             let rmseText = rmse.map { String(format: "，RMSE %.3fm", $0) } ?? ""
                             self.spatialCalibrationStatus = accepted
                                 ? "坐标系标定通过\(rmseText)"
                                 : "点云已上传，但标定未通过：\(reason)\(rmseText)"
+                            let previous = self.spatialReadiness
+                            self.spatialReadiness = SpatialCalibrationReadiness(
+                                score: accepted ? 100 : min(previous.score, 84),
+                                coverageScore: previous.coverageScore,
+                                phase: accepted ? "正式标定通过" : "正式标定未通过",
+                                guidance: accepted
+                                    ? "Linux 完整配准已确认并激活统一坐标变换。"
+                                    : reason,
+                                overlapRatio: inlierRatio.map { Float($0) } ?? previous.overlapRatio,
+                                rmseM: rmse.map { Float($0) } ?? previous.rmseM,
+                                stableUpdates: accepted ? max(previous.stableUpdates, 3) : previous.stableUpdates
+                            )
                         }
                     }
                 }

@@ -45,6 +45,7 @@ enum JSONWire {
 struct SharedCoordinateVisualization: Sendable {
     let mode: String
     let sharedFrameID: String
+    let alignmentID: String
     let phoneSourceFromSharedOrigin: simd_float4x4
     let phoneSourceFromLinuxMicrophone: simd_float4x4
 
@@ -93,6 +94,7 @@ struct SharedOriginUpdate: Sendable {
            let linux = JSONWire.matrix4x4(json, "phone_source_from_linux_microphone") {
             visualization = SharedCoordinateVisualization(
                 mode: mode, sharedFrameID: sharedFrameID,
+                alignmentID: JSONWire.string(json, "calibration_signature") ?? "legacy",
                 phoneSourceFromSharedOrigin: SharedCoordinateVisualization.transform(shared),
                 phoneSourceFromLinuxMicrophone: SharedCoordinateVisualization.transform(linux)
             )

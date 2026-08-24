@@ -226,6 +226,7 @@ struct ContentView: View {
                 .disabled(
                     pose.trackingState != "tracking" || responder.isRunning
                     || poseTracker.isSpatialScanning
+                    || responder.sharedOriginRequestInFlight
                     || !configurationValid || !linuxRemoteStartEnabled
                 )
                 sharedCoordinateSummary(pose: pose)

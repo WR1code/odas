@@ -15,8 +15,10 @@ struct ARCameraView: UIViewRepresentable {
         view.automaticallyUpdatesLighting = true
         view.rendersCameraGrain = true
         view.scene.rootNode.addChildNode(context.coordinator.originNode)
-        context.coordinator.originNode.addChildNode(context.coordinator.sharedOriginNode)
-        context.coordinator.originNode.addChildNode(context.coordinator.linuxCoordinateNode)
+        // Shared/Linux frames are world anchors. They must not inherit a later
+        // phone-origin reset, otherwise a mode switch can move a fixed UMA-8.
+        view.scene.rootNode.addChildNode(context.coordinator.sharedOriginNode)
+        view.scene.rootNode.addChildNode(context.coordinator.linuxCoordinateNode)
         view.scene.rootNode.addChildNode(context.coordinator.connectorNode)
         view.scene.rootNode.addChildNode(context.coordinator.distanceNode)
         view.scene.rootNode.addChildNode(context.coordinator.capturePointsNode)
@@ -28,11 +30,13 @@ struct ARCameraView: UIViewRepresentable {
 
     func updateUIView(_ uiView: ARSCNView, context: Context) {
         context.coordinator.syncCapturePoints(poseTracker.capturePoints)
-        context.coordinator.syncSharedCoordinates(sharedCoordinates)
         if context.coordinator.lastRevision != visualOriginRevision {
             context.coordinator.lastRevision = visualOriginRevision
             context.coordinator.placeOriginAtCamera(in: uiView)
         }
+        // Rebase the visual phone source first, then resolve protocol-local
+        // transforms into persistent ARKit-world transforms.
+        context.coordinator.syncSharedCoordinates(sharedCoordinates)
     }
 
     static func dismantleUIView(_ uiView: ARSCNView, coordinator: Coordinator) {
@@ -84,6 +88,7 @@ struct ARCameraView: UIViewRepresentable {
         private var hasOrigin = false
         private var renderedCaptureIDs = Set<UUID>()
         private var renderedCaptureQuality: [UUID: CapturePointQuality] = [:]
+        private var anchoredAlignmentID: String?
 
         func syncSharedCoordinates(_ value: SharedCoordinateVisualization?) {
             guard let value else {
@@ -93,8 +98,18 @@ struct ARCameraView: UIViewRepresentable {
             }
             sharedOriginNode.isHidden = false
             linuxCoordinateNode.isHidden = false
-            sharedOriginNode.simdTransform = value.phoneSourceFromSharedOrigin
-            linuxCoordinateNode.simdTransform = value.phoneSourceFromLinuxMicrophone
+            let phoneSourceWorld = originNode.simdWorldTransform
+            let proposedLinuxWorld = phoneSourceWorld * value.phoneSourceFromLinuxMicrophone
+            if anchoredAlignmentID != value.alignmentID {
+                anchoredAlignmentID = value.alignmentID
+                linuxCoordinateNode.simdWorldTransform = proposedLinuxWorld
+            }
+            if value.mode == "linux_microphone" {
+                // In Linux-origin mode these frames are identical by definition.
+                sharedOriginNode.simdWorldTransform = linuxCoordinateNode.simdWorldTransform
+            } else {
+                sharedOriginNode.simdWorldTransform = phoneSourceWorld * value.phoneSourceFromSharedOrigin
+            }
         }
 
         func syncCapturePoints(_ points: [CapturePoint]) {

@@ -86,6 +86,13 @@ def test_second_switch_uses_the_post_reset_phone_source_transform() -> None:
     )
     assert np.allclose(second["phone_position_m"], expected_shared_phone[:3])
     assert np.allclose(second["linux_microphone_position_m"], [0, 0, 0])
+    # Changing the coordinate expression must not move the physical UMA-8 in
+    # the unchanged LiDAR/AR world.
+    first_phone_from_linux = np.asarray(first["phone_source_from_linux_microphone"])
+    recovered_world_linux = (
+        np.asarray(first["next_phone_source_to_world"]) @ first_phone_from_linux
+    )
+    assert np.allclose(recovered_world_linux[:3, 3], [4, 2, 0.2])
 
 
 def test_udp_pose_provider_rebases_to_explicit_microphone_origin() -> None:

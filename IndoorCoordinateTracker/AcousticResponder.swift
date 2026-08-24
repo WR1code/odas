@@ -56,6 +56,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     @Published private(set) var sharedLinuxPosition: SIMD3<Double>?
     @Published private(set) var sharedVisualization: SharedCoordinateVisualization?
     @Published private(set) var phoneOriginResetGeneration = 0
+    @Published private(set) var sharedOriginRequestInFlight = false
 
     private struct CaptureAnchor { let sample: Int64; let hostTime: UInt64 }
     private let poseSnapshot: @Sendable () -> DevicePose
@@ -337,6 +338,10 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             return
         }
         guard mode == "linux_microphone" || mode == "iphone_current" else { return }
+        stateLock.lock()
+        let alreadyPending = pendingSharedOriginCommandID != nil
+        stateLock.unlock()
+        guard !alreadyPending else { return }
         let pose = poseSnapshot()
         guard pose.trackingState == "tracking", pose.source == "ios_arkit_world_tracking" else {
             DispatchQueue.main.async { self.sharedOriginStatus = "ARKit 尚未稳定，不能设置共享原点" }
@@ -370,6 +375,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         pendingSharedOriginNextSourceEpoch = nextSourceEpoch
         stateLock.unlock()
         DispatchQueue.main.async {
+            self.sharedOriginRequestInFlight = true
             self.sharedOriginStatus = mode == "linux_microphone"
                 ? "正在请求以 Linux/UMA-8 为原点…"
                 : "正在请求以手机当前位置为原点…"
@@ -399,7 +405,10 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
                 }
                 self.stateLock.unlock()
                 if timedOut {
-                    DispatchQueue.main.async { self.sharedOriginStatus = "Linux 共享原点 ACK 超时" }
+                    DispatchQueue.main.async {
+                        self.sharedOriginRequestInFlight = false
+                        self.sharedOriginStatus = "Linux 共享原点 ACK 超时"
+                    }
                 }
             }
         }
@@ -447,6 +456,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         }
         DispatchQueue.main.async {
             guard update.accepted else {
+                self.sharedOriginRequestInFlight = false
                 self.sharedOriginStatus = "共享原点设置失败：\(update.reason)"
                 return
             }
@@ -461,7 +471,16 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
                 String(format: "UMA-8=(%+.3f,%+.3f,%+.3f)m", $0.x, $0.y, $0.z)
             } ?? "UMA-8=--"
             self.sharedOriginStatus = "已应用 \(update.sharedFrameID) | \(phone) | \(linux)"
-            if update.phoneResetRequired { self.phoneOriginResetGeneration += 1 }
+            if update.phoneResetRequired {
+                self.phoneOriginResetGeneration += 1
+                // PoseTracker applies its requested origin on the next ARFrame.
+                // Keep the mode control locked across that frame boundary.
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(350)) {
+                    self.sharedOriginRequestInFlight = false
+                }
+            } else {
+                self.sharedOriginRequestInFlight = false
+            }
         }
         appendLog("SHARED_ORIGIN_ACK_ACCEPTED command=\(update.commandID) mode=\(update.mode) frame=\(update.sharedFrameID)")
     }

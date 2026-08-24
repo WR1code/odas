@@ -51,13 +51,16 @@ struct ARCameraView: UIViewRepresentable {
 
     final class Coordinator: NSObject, ARSCNViewDelegate {
         fileprivate let originNode = ARCoordinateOriginNode(
-            title: "手机 AR 源原点", centerColor: .white, axisLength: 0.22
+            title: "手机 AR 源原点", centerColor: .white,
+            axisLength: 0.22, titleOffsetY: -0.050
         )
         fileprivate let sharedOriginNode = ARCoordinateOriginNode(
-            title: "共享原点", centerColor: .systemYellow, axisLength: 0.18
+            title: "共享原点", centerColor: .systemYellow,
+            axisLength: 0.18, titleOffsetY: -0.075
         )
         fileprivate let linuxCoordinateNode = ARCoordinateOriginNode(
-            title: "Linux / UMA-8", centerColor: .systemPurple, axisLength: 0.15
+            title: "Linux / UMA-8", centerColor: .systemPurple,
+            axisLength: 0.15, titleOffsetY: -0.100
         )
         let connectorNode: SCNNode = {
             let cylinder = SCNCylinder(radius: 0.004, height: 0.001)
@@ -221,7 +224,10 @@ struct ARCameraView: UIViewRepresentable {
 /// A world-space origin marker placed at the camera's exact AR position when
 /// reset. It is not attached to the camera, so it remains there as the user moves.
 private final class ARCoordinateOriginNode: SCNNode {
-    init(title: String, centerColor: UIColor, axisLength: CGFloat) {
+    init(
+        title: String, centerColor: UIColor, axisLength: CGFloat,
+        titleOffsetY: Float
+    ) {
         super.init()
         // Geometry is authored in local FLU axes. The node is rotated to the
         // reset-time horizontal phone heading when the origin is placed.
@@ -236,7 +242,7 @@ private final class ARCoordinateOriginNode: SCNNode {
         titleGeometry.firstMaterial?.diffuse.contents = centerColor
         let titleNode = SCNNode(geometry: titleGeometry)
         titleNode.scale = SCNVector3(0.005, 0.005, 0.005)
-        titleNode.position = SCNVector3(0, -0.055, 0)
+        titleNode.position = SCNVector3(0, titleOffsetY, 0)
         titleNode.constraints = [SCNBillboardConstraint()]
         addChildNode(titleNode)
     }

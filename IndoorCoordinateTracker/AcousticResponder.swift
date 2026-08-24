@@ -23,6 +23,7 @@ enum UDPTestState: Sendable {
 }
 
 final class AcousticResponder: ObservableObject, @unchecked Sendable {
+    let monitor = AcousticMonitorStore()
     @Published private(set) var isRunning = false
     @Published private(set) var isPaused = false
     @Published private(set) var isTestingC2 = false
@@ -64,9 +65,11 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     private let measurementQualityReceived: @Sendable (String, Int64, Bool, String) -> Void
     private let pairing = ArmPairingManager()
     private var detector = StreamingC1Detector()
+    private lazy var monitorProcessor = AcousticMonitorProcessor(store: monitor)
     private let stateLock = NSLock()
     private let analysisQueue = DispatchQueue(label: "com.avtwin.ios.audio-analysis", qos: .userInteractive)
     private let responseQueue = DispatchQueue(label: "com.avtwin.ios.audio-response", qos: .userInteractive)
+    private let visualizationQueue = DispatchQueue(label: "com.avtwin.ios.audio-visualization", qos: .utility)
     private var configuration: ResponderConfiguration?
     private var preparedConfiguration: ResponderConfiguration?
     private var controlServer: UDPControlServer?
@@ -534,7 +537,11 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         controlServer?.stop(); controlServer = nil
         cleanupAudio()
         pairing.clearPending()
-        if wasActive { responseQueue.sync {} }
+        if wasActive {
+            responseQueue.sync {}
+            visualizationQueue.sync {}
+            analysisQueue.sync {}
+        }
         appendLog("SESSION_STOPPED")
         updateSessionFile(status: "stopped")
         storage?.close()
@@ -639,6 +646,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         pairing.reset()
         detector = StreamingC1Detector(template: config.c1.samples)
         detector.reset(nextSample: 0, generation: pairing.detectorGate().generation)
+        monitorProcessor.reset()
         let sessionID = UUID().uuidString
         localSessionID = sessionID
         do {
@@ -742,7 +750,10 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             let running = self.runningValue
             self.stateLock.unlock()
             guard running else { return }
-            self.analysisQueue.async { self.analyze(copied, absoluteStart: start) }
+            self.analysisQueue.async {
+                self.monitorProcessor.append(copied)
+                self.analyze(copied, absoluteStart: start)
+            }
         }
         self.engine = engine; self.player = player; self.c2Buffer = buffer
         engine.prepare(); try engine.start()
@@ -1012,6 +1023,27 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         let t3 = localC2?.t3Sample
         let delay = t3.map { $0 - t2 }
         let timingValid = playbackVerified && (delay.map { $0 >= 0 && $0 <= Int64(ProbeDefaults.sampleRate) } ?? false)
+        let rirPreArrivalSamples = 480
+        let rirOutputSamples = 24_000
+        let rirAudio: [Float]? = analysisQueue.sync {
+            detector.window(
+                centerSample: t2,
+                before: rirPreArrivalSamples,
+                after: config.c1.samples.count + rirOutputSamples
+            )
+        }
+        if let rirAudio {
+            let c1Samples = config.c1.samples
+            visualizationQueue.async {
+                let matchedRIR = AcousticVisualizationDSP.matchedFilterRIR(
+                    audio: rirAudio, probe: c1Samples,
+                    preArrivalSamples: rirPreArrivalSamples, outputSamples: rirOutputSamples
+                )
+                self.analysisQueue.async {
+                    self.monitorProcessor.updateRIR(matchedRIR, preArrivalSamples: rirPreArrivalSamples)
+                }
+            }
+        }
         stateLock.lock(); replyDelayValue = timingValid ? delay : nil; t3PreciseValue = timingValid; stateLock.unlock()
         DispatchQueue.main.async { self.stateName = "REPORTING" }
 

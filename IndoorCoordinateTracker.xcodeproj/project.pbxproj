@@ -25,6 +25,7 @@
 		A10000000000000000000011 /* LocalC2AcousticDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* LocalC2AcousticDetector.swift */; };
 		A10000000000000000000012 /* SpatialPointCloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* SpatialPointCloud.swift */; };
 		A10000000000000000000013 /* Network.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000015 /* Network.framework */; };
+		A10000000000000000000014 /* AcousticVisualization.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000016 /* AcousticVisualization.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -49,6 +50,7 @@
 		A20000000000000000000013 /* LocalC2AcousticDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalC2AcousticDetector.swift; sourceTree = "<group>"; };
 		A20000000000000000000014 /* SpatialPointCloud.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialPointCloud.swift; sourceTree = "<group>"; };
 		A20000000000000000000015 /* Network.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Network.framework; path = System/Library/Frameworks/Network.framework; sourceTree = SDKROOT; };
+		A20000000000000000000016 /* AcousticVisualization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AcousticVisualization.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -93,6 +95,7 @@
 				A20000000000000000000010 /* LocalNetworkInfo.swift */,
 				A20000000000000000000013 /* LocalC2AcousticDetector.swift */,
 				A20000000000000000000014 /* SpatialPointCloud.swift */,
+				A20000000000000000000016 /* AcousticVisualization.swift */,
 				A20000000000000000000009 /* Info.plist */,
 			);
 			path = IndoorCoordinateTracker;
@@ -186,6 +189,7 @@
 				A1000000000000000000000E /* LocalNetworkInfo.swift in Sources */,
 				A10000000000000000000011 /* LocalC2AcousticDetector.swift in Sources */,
 				A10000000000000000000012 /* SpatialPointCloud.swift in Sources */,
+				A10000000000000000000014 /* AcousticVisualization.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -60,6 +60,7 @@ struct ContentView: View {
                 VStack(spacing: 12) {
                     headerCard
                     probeCard
+                    AcousticMonitorCard(monitor: responder.monitor, isRunning: responder.isRunning)
                     poseCard
                     spatialCalibrationCard
                     sessionCard
@@ -145,8 +146,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("\(title): \(probe.summary)").font(.caption)
             Text(probe.diagnostics).font(.system(size: 9, design: .monospaced)).textSelection(.enabled).foregroundStyle(.secondary)
-            ProbeSpectrumView(bins: probe.spectrumBins, tint: title == "C1" ? .cyan : .orange)
-                .frame(height: 76)
+            ProbeDetailVisualization(title: title, probe: probe, tint: title == "C1" ? .cyan : .orange)
             HStack {
                 Button("选择 \(title) WAV", action: select).buttonStyle(.bordered)
                 Button("恢复默认", action: reset).buttonStyle(.bordered)
@@ -359,7 +359,7 @@ struct ContentView: View {
                     title: poseTracker.isSpatialScanning ? "iPhone 实时扫描点云" : "iPhone 本次扫描点云",
                     tint: .cyan,
                     height: 300,
-                    note: "扫描时约每0.5秒刷新；确认画面中包含门框、墙角、桌角等非对称结构。"
+                    note: "扫描时约每0.5秒刷新且保留当前视角；可继续旋转、缩放、拖动，确认画面中包含非对称结构。"
                 )
             }
         }

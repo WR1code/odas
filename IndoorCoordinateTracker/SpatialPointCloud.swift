@@ -4,6 +4,7 @@ import Foundation
 import Network
 import SceneKit
 import SwiftUI
+import UIKit
 import simd
 
 struct SpatialPointCloudSnapshot: Identifiable, Sendable {
@@ -735,27 +736,51 @@ struct SpatialPointCloudPreview: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> SCNView {
-        let view = SCNView(frame: .zero)
+        let view = InteractivePointCloudSCNView(frame: .zero)
         view.backgroundColor = .black
         view.allowsCameraControl = true
+        view.defaultCameraController.inertiaEnabled = true
         view.autoenablesDefaultLighting = false
         view.antialiasingMode = .multisampling4X
         context.coordinator.render(cloud, in: view)
+        context.coordinator.installInteractionTracking(in: view)
         return view
     }
 
     func updateUIView(_ view: SCNView, context: Context) {
+        context.coordinator.installInteractionTracking(in: view)
         guard context.coordinator.renderedID != cloud.id else { return }
         context.coordinator.render(cloud, in: view)
     }
 
-    final class Coordinator {
+    final class Coordinator: NSObject {
         var renderedID: UUID?
+        private var pointNode: SCNNode?
+        private var cameraNode: SCNNode?
+        private var tracksInteraction = false
+        private var userAdjustedCamera = false
+
+        func installInteractionTracking(in view: SCNView) {
+            guard !tracksInteraction else { return }
+            let recognizers = view.gestureRecognizers ?? []
+            guard !recognizers.isEmpty else { return }
+            tracksInteraction = true
+            for recognizer in recognizers {
+                recognizer.addTarget(self, action: #selector(cameraGestureChanged(_:)))
+                recognizer.cancelsTouchesInView = true
+            }
+        }
+
+        @objc private func cameraGestureChanged(_ recognizer: UIGestureRecognizer) {
+            if recognizer.state == .began || recognizer.state == .changed {
+                userAdjustedCamera = true
+            }
+        }
 
         func render(_ cloud: SpatialPointCloudSnapshot, in view: SCNView) {
             renderedID = cloud.id
-            let scene = SCNScene()
             let converted = cloud.points.map { SIMD3<Float>(-$0.y, $0.z, -$0.x) }
+            guard !converted.isEmpty else { return }
             let minimumZ = converted.map(\.y).min() ?? 0
             let maximumZ = converted.map(\.y).max() ?? 1
             let heightSpan = max(maximumZ - minimumZ, 0.01)
@@ -791,21 +816,47 @@ struct SpatialPointCloudPreview: UIViewRepresentable {
             material.lightingModel = .constant
             material.isDoubleSided = true
             geometry.materials = [material]
-            scene.rootNode.addChildNode(SCNNode(geometry: geometry))
+
+            let scene: SCNScene
+            if let existing = view.scene {
+                scene = existing
+            } else {
+                scene = SCNScene()
+                view.scene = scene
+            }
+            if let pointNode {
+                // Live scanning produces a new cloud every ~0.5 s. Replacing
+                // only the geometry preserves SceneKit's camera controller and
+                // any rotation/pan/zoom currently being performed by the user.
+                pointNode.geometry = geometry
+            } else {
+                let node = SCNNode(geometry: geometry)
+                pointNode = node
+                scene.rootNode.addChildNode(node)
+            }
 
             let sum = converted.reduce(SIMD3<Float>.zero, +)
             let center = sum / Float(converted.count)
             let radius = max(converted.map { simd_length($0 - center) }.max() ?? 1, 0.5)
-            let camera = SCNCamera()
-            camera.zNear = 0.01
-            camera.zFar = Double(max(radius * 8, 20))
-            let cameraNode = SCNNode()
-            cameraNode.camera = camera
-            cameraNode.simdPosition = center + SIMD3<Float>(radius * 0.9, radius * 0.7, radius * 1.4)
-            cameraNode.look(at: SCNVector3(center))
-            scene.rootNode.addChildNode(cameraNode)
-            view.scene = scene
-            view.pointOfView = cameraNode
+            let activeCameraNode: SCNNode
+            if let cameraNode {
+                activeCameraNode = cameraNode
+            } else {
+                let camera = SCNCamera()
+                camera.zNear = 0.01
+                let node = SCNNode()
+                node.camera = camera
+                cameraNode = node
+                scene.rootNode.addChildNode(node)
+                view.pointOfView = node
+                activeCameraNode = node
+            }
+            activeCameraNode.camera?.zFar = Double(max(radius * 8, 20))
+            if !userAdjustedCamera {
+                activeCameraNode.simdPosition = center + SIMD3<Float>(radius * 0.9, radius * 0.7, radius * 1.4)
+                activeCameraNode.look(at: SCNVector3(center))
+                view.defaultCameraController.target = SCNVector3(center)
+            }
         }
 
         private static func turboColor(_ value: Float) -> SIMD4<Float> {
@@ -814,6 +865,25 @@ struct SpatialPointCloudPreview: UIViewRepresentable {
             let green = max(0, min(1, 1.5 - abs(4 * value - 2)))
             let blue = max(0, min(1, 1.5 - abs(4 * value - 1)))
             return SIMD4<Float>(red, green, blue, 1)
+        }
+    }
+}
+
+/// SceneKit camera gestures and the surrounding SwiftUI `ScrollView` both use
+/// pan recognizers. A touch that starts inside the point-cloud preview belongs
+/// to the preview; page scrolling remains available everywhere outside it.
+private final class InteractivePointCloudSCNView: SCNView {
+    private weak var configuredScrollView: UIScrollView?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard window != nil else { return }
+        var ancestor = superview
+        while let current = ancestor, !(current is UIScrollView) { ancestor = current.superview }
+        guard let scrollView = ancestor as? UIScrollView, configuredScrollView !== scrollView else { return }
+        configuredScrollView = scrollView
+        for recognizer in gestureRecognizers ?? [] where recognizer is UIPanGestureRecognizer {
+            scrollView.panGestureRecognizer.require(toFail: recognizer)
         }
     }
 }

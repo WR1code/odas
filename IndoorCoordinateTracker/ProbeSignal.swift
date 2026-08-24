@@ -5,6 +5,7 @@ import Foundation
 struct ProbeDefinition: Sendable {
     let samples: [Float]
     let spectrumBins: [Float]
+    let visualization: ProbeVisualization
     let name: String
     let isBuiltIn: Bool
     let originalSampleRate: Int
@@ -49,7 +50,8 @@ enum ProbeDefaults {
         let pcm = PCM16.encode(samples)
         let hash = SHA256.hex(pcm)
         return ProbeDefinition(
-            samples: samples, spectrumBins: ProbeSpectrum.normalizedBins(samples), name: name, isBuiltIn: true,
+            samples: samples, spectrumBins: ProbeSpectrum.normalizedBins(samples),
+            visualization: ProbeVisualization.analyze(samples), name: name, isBuiltIn: true,
             originalSampleRate: Int(sampleRate), originalChannels: 1,
             sourceChannel: "BUILT_IN_MONO", leftPeak: 0, rightPeak: 0,
             sourceSHA256: hash, internalPCMSHA256: hash, sourceURLDescription: nil
@@ -170,7 +172,8 @@ enum WavProbeLoader {
         guard duration >= 0.020 else { throw error("探针短于 20 ms") }
         guard duration <= 2.0 else { throw error("探针长于 2 s") }
         return ProbeDefinition(
-            samples: internalSamples, spectrumBins: ProbeSpectrum.normalizedBins(internalSamples), name: name, isBuiltIn: false,
+            samples: internalSamples, spectrumBins: ProbeSpectrum.normalizedBins(internalSamples),
+            visualization: ProbeVisualization.analyze(internalSamples), name: name, isBuiltIn: false,
             originalSampleRate: sampleRate, originalChannels: channels,
             sourceChannel: channels >= 2 ? "RIGHT" : "MONO",
             leftPeak: leftPeak, rightPeak: rightPeak,

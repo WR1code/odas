@@ -10,7 +10,8 @@ struct ARCameraView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> ARSCNView {
         let view = ARSCNView(frame: .zero)
-        view.session.delegate = poseTracker
+        view.session = poseTracker.arSession
+        poseTracker.ensureARSessionRunning()
         view.delegate = context.coordinator
         view.automaticallyUpdatesLighting = true
         view.rendersCameraGrain = true
@@ -23,8 +24,11 @@ struct ARCameraView: UIViewRepresentable {
         view.scene.rootNode.addChildNode(context.coordinator.distanceNode)
         view.scene.rootNode.addChildNode(context.coordinator.capturePointsNode)
         context.coordinator.lastRevision = visualOriginRevision
-        startTracking(on: view)
-        context.coordinator.pendingInitialPlacement = true
+        if let origin = poseTracker.visualOriginTransform() {
+            context.coordinator.applyOriginTransform(origin)
+        } else {
+            context.coordinator.pendingInitialPlacement = true
+        }
         return view
     }
 
@@ -40,17 +44,9 @@ struct ARCameraView: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ uiView: ARSCNView, coordinator: Coordinator) {
-        uiView.session.pause()
-    }
-
-    private func startTracking(on view: ARSCNView) {
-        let configuration = ARWorldTrackingConfiguration()
-        configuration.worldAlignment = .gravity
-        configuration.environmentTexturing = .automatic
-        if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
-            configuration.frameSemantics.insert(.sceneDepth)
-        }
-        view.session.run(configuration, options: [.resetTracking, .removeExistingAnchors])
+        // PoseTracker owns the shared session. Do not pause it when SwiftUI
+        // moves the preview between tabs; scanning must continue uninterrupted.
+        uiView.delegate = nil
     }
 
     final class Coordinator: NSObject, ARSCNViewDelegate {
@@ -89,6 +85,15 @@ struct ARCameraView: UIViewRepresentable {
         private var renderedCaptureIDs = Set<UUID>()
         private var renderedCaptureQuality: [UUID: CapturePointQuality] = [:]
         private var anchoredAlignmentID: String?
+
+        func applyOriginTransform(_ transform: simd_float4x4) {
+            originNode.simdWorldTransform = transform
+            originPosition = SIMD3<Float>(
+                transform.columns.3.x, transform.columns.3.y, transform.columns.3.z
+            )
+            hasOrigin = true
+            pendingInitialPlacement = false
+        }
 
         func syncSharedCoordinates(_ value: SharedCoordinateVisualization?) {
             guard let value else {

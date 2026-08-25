@@ -2,6 +2,34 @@ import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
+private enum AppPage: Hashable {
+    case run, acoustics, spatial, settings
+
+    var title: String {
+        switch self {
+        case .run: return "运行"
+        case .acoustics: return "声学"
+        case .spatial: return "空间"
+        case .settings: return "设置"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .run: return "play.circle.fill"
+        case .acoustics: return "waveform.path.ecg.rectangle"
+        case .spatial: return "viewfinder"
+        case .settings: return "gearshape.fill"
+        }
+    }
+}
+
+private enum AcousticPage: String, CaseIterable, Identifiable {
+    case live = "实时四图"
+    case probes = "探针详情"
+    var id: String { rawValue }
+}
+
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @FocusState private var isInputFocused: Bool
@@ -31,6 +59,8 @@ struct ContentView: View {
     @State private var networkSnapshot = LocalNetworkInfo.snapshot()
     @State private var selectedPointCloud: PointCloudViewerSelection?
     @State private var visualOriginRevision = 0
+    @State private var selectedPage: AppPage = .run
+    @State private var acousticPage: AcousticPage = .live
 
     init(poseTracker: PoseTracker) {
         self.poseTracker = poseTracker
@@ -56,23 +86,51 @@ struct ContentView: View {
         ZStack {
             LinearGradient(colors: [Color(uiColor: .systemBackground), Color(uiColor: .secondarySystemBackground)], startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
-            ScrollView {
-                VStack(spacing: 12) {
+            TabView(selection: $selectedPage) {
+                pageScroll {
                     headerCard
-                    probeCard
-                    AcousticMonitorCard(monitor: responder.monitor, isRunning: responder.isRunning)
-                    poseCard
-                    spatialCalibrationCard
                     sessionCard
+                    poseCard(for: .run, includeSpatialControls: false)
+                    metricsCard
+                }
+                .tabItem { Label(AppPage.run.title, systemImage: AppPage.run.icon) }
+                .tag(AppPage.run)
+
+                pageScroll {
+                    pageHeader(.acoustics)
+                    Picker("声学页面", selection: $acousticPage) {
+                        ForEach(AcousticPage.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    if acousticPage == .live {
+                        AcousticMonitorCard(monitor: responder.monitor, isRunning: responder.isRunning)
+                    } else {
+                        probeCard
+                        testCard
+                    }
+                }
+                .tabItem { Label(AppPage.acoustics.title, systemImage: AppPage.acoustics.icon) }
+                .tag(AppPage.acoustics)
+
+                pageScroll {
+                    pageHeader(.spatial)
+                    poseCard(for: .spatial, includeSpatialControls: true)
+                    spatialCalibrationCard
+                }
+                .tabItem { Label(AppPage.spatial.title, systemImage: AppPage.spatial.icon) }
+                .tag(AppPage.spatial)
+
+                pageScroll {
+                    pageHeader(.settings)
                     networkCard
                     storageCard
-                    testCard
-                    metricsCard
+                    diagnosticsCard
                     if showingLog { logCard }
                 }
-                .padding(.horizontal, 14).padding(.vertical, 10)
+                .tabItem { Label(AppPage.settings.title, systemImage: AppPage.settings.icon) }
+                .tag(AppPage.settings)
             }
-            .scrollDismissesKeyboard(.interactively)
+            .tint(.cyan)
         }
         .onAppear {
             refreshNetworkSnapshot()
@@ -107,6 +165,27 @@ struct ContentView: View {
                 Button("完成") { isInputFocused = false }
             }
         }
+    }
+
+    private func pageScroll<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        ScrollView {
+            VStack(spacing: 12) { content() }
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                .padding(.bottom, 8)
+        }
+        .scrollDismissesKeyboard(.interactively)
+    }
+
+    private func pageHeader(_ page: AppPage) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: page.icon).font(.title2).foregroundStyle(.cyan)
+            Text(page.title).font(.headline)
+            Spacer()
+            Circle().fill(responder.isRunning ? Color.green : Color.secondary)
+                .frame(width: 8, height: 8)
+            Text(responder.stateName).font(.caption.monospaced()).foregroundStyle(.secondary)
+        }
+        .card()
     }
 
     private var headerCard: some View {
@@ -154,8 +233,8 @@ struct ContentView: View {
         }
     }
 
-    private var poseCard: some View {
-        let pose = poseTracker.currentPose
+    private func poseCard(for page: AppPage, includeSpatialControls: Bool) -> some View {
+        let pose = poseSelection.snapshot()
         return VStack(alignment: .leading, spacing: 9) {
             Label("响应位姿", systemImage: "viewfinder").font(.subheadline.bold())
             Picker("位姿来源", selection: Binding(
@@ -164,49 +243,37 @@ struct ContentView: View {
             .pickerStyle(.segmented)
             Text("世界坐标：重置时手机水平前方为 +X、左侧为 +Y，世界向上为 +Z")
                 .font(.caption2).foregroundStyle(.secondary)
-            if poseSelection.mode == .arkit {
-                HStack { coordinate("X", pose.position.x); coordinate("Y", pose.position.y); coordinate("Z", pose.position.z) }
-                Text(String(format: "yaw %.1f°  pitch %.1f°  roll %.1f° | %@", pose.yawDegrees, pose.pitchDegrees, pose.rollDegrees, poseTracker.statusText))
-                    .font(.caption.monospacedDigit())
-                XYHeadingView(yawDegrees: responder.sharedYawDegrees(for: pose))
-                    .frame(height: 150)
-                BubbleLevelView(pitchDegrees: pose.pitchDegrees, rollDegrees: pose.rollDegrees)
-                    .frame(height: 205)
-                VStack(alignment: .leading, spacing: 5) {
-                    Label("相机预览", systemImage: "camera.fill").font(.caption.bold())
-                    ZStack {
-                        ARCameraView(
-                            poseTracker: poseTracker,
-                            visualOriginRevision: visualOriginRevision,
-                            sharedCoordinates: responder.sharedVisualization
-                        )
-                        Image(systemName: "plus")
-                            .font(.system(size: 22, weight: .light))
-                            .foregroundStyle(.white.opacity(0.8))
-                            .shadow(radius: 2)
-                        VStack {
-                            Spacer()
-                            Text("红X=前 · 绿Y=左 · 蓝Z=上 · 黄线=原点距离")
-                                .font(.caption2)
-                                .padding(.horizontal, 8).padding(.vertical, 4)
-                                .background(.black.opacity(0.55), in: Capsule())
-                                .foregroundStyle(.white)
-                                .padding(.bottom, 8)
-                        }
-                    }
-                    .frame(height: 230)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay { RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.18)) }
-                    HStack {
-                        Text("已保留 \(poseTracker.capturePoints.count) 个采集点；黄=等待，绿=成功，红=失败")
-                            .font(.caption2).foregroundStyle(.secondary)
-                        Spacer()
-                        if !poseTracker.capturePoints.isEmpty {
-                            Button("清空标记") { poseTracker.clearCapturePoints() }
-                                .font(.caption2).buttonStyle(.bordered)
-                        }
-                    }
+            if poseSelection.mode == .manual {
+                HStack { numberField("X m", $manualX); numberField("Y m", $manualY); numberField("Z m", $manualZ) }
+                HStack { numberField("Yaw°", $manualYaw); numberField("Pitch°", $manualPitch); numberField("Roll°", $manualRoll) }
+                Button {
+                    _ = poseSelection.applyManual([manualX, manualY, manualZ, manualYaw, manualPitch, manualRoll])
+                } label: { Text("应用当前位姿（下一次 C1 使用）").frame(maxWidth: .infinity) }
+                .buttonStyle(.bordered)
+                Text(poseSelection.manualSummary).font(.caption2).foregroundStyle(.secondary)
+            }
+            HStack { coordinate("X", pose.position.x); coordinate("Y", pose.position.y); coordinate("Z", pose.position.z) }
+            Text(String(
+                format: "yaw %.1f°  pitch %.1f°  roll %.1f° | %@",
+                pose.yawDegrees, pose.pitchDegrees, pose.rollDegrees,
+                poseSelection.mode == .arkit ? poseTracker.statusText : "manual"
+            ))
+            .font(.caption.monospacedDigit())
+            XYHeadingView(yawDegrees: responder.sharedYawDegrees(for: pose))
+                .frame(height: 150)
+            BubbleLevelView(pitchDegrees: pose.pitchDegrees, rollDegrees: pose.rollDegrees)
+                .frame(height: 205)
+            cameraPreview(for: page)
+            HStack {
+                Text("已保留 \(poseTracker.capturePoints.count) 个采集点；黄=等待，绿=成功，红=失败")
+                    .font(.caption2).foregroundStyle(.secondary)
+                Spacer()
+                if !poseTracker.capturePoints.isEmpty {
+                    Button("清空标记") { poseTracker.clearCapturePoints() }
+                        .font(.caption2).buttonStyle(.bordered)
                 }
+            }
+            if includeSpatialControls, poseSelection.mode == .arkit {
                 Picker("共享原点", selection: $sharedOriginMode) {
                     Text("Linux / UMA-8 原点").tag("linux_microphone")
                     Text("手机当前位置原点").tag("iphone_current")
@@ -230,18 +297,43 @@ struct ContentView: View {
                     || !configurationValid || !linuxRemoteStartEnabled
                 )
                 sharedCoordinateSummary(pose: pose)
-            } else {
-                HStack { numberField("X m", $manualX); numberField("Y m", $manualY); numberField("Z m", $manualZ) }
-                HStack { numberField("Yaw°", $manualYaw); numberField("Pitch°", $manualPitch); numberField("Roll°", $manualRoll) }
-                Button {
-                    _ = poseSelection.applyManual([manualX, manualY, manualZ, manualYaw, manualPitch, manualRoll])
-                } label: { Text("应用当前位姿（下一次 C1 使用）").frame(maxWidth: .infinity) }
-                .buttonStyle(.bordered)
-                Text(poseSelection.manualSummary).font(.caption2).foregroundStyle(.secondary)
             }
             Text("每次有效 C1 都会冻结当时选中的位姿；会话运行时仍可更新。")
                 .font(.caption2).foregroundStyle(.secondary)
         }.card()
+    }
+
+    private func cameraPreview(for page: AppPage) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Label("相机预览", systemImage: "camera.fill").font(.caption.bold())
+            ZStack {
+                if selectedPage == page {
+                    ARCameraView(
+                        poseTracker: poseTracker,
+                        visualOriginRevision: visualOriginRevision,
+                        sharedCoordinates: responder.sharedVisualization
+                    )
+                } else {
+                    Color.black
+                }
+                Image(systemName: "plus")
+                    .font(.system(size: 22, weight: .light))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .shadow(radius: 2)
+                VStack {
+                    Spacer()
+                    Text("红X=前 · 绿Y=左 · 蓝Z=上 · 黄线=原点距离")
+                        .font(.caption2)
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(.black.opacity(0.55), in: Capsule())
+                        .foregroundStyle(.white)
+                        .padding(.bottom, 8)
+                }
+            }
+            .frame(height: 230)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay { RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.18)) }
+        }
     }
 
     private var networkCard: some View {
@@ -508,12 +600,25 @@ struct ContentView: View {
             HStack { Label("会话指标", systemImage: "gauge.with.dots.needle.67percent").font(.subheadline.bold()); Spacer(); Text(responder.stateName).font(.caption.monospaced()).foregroundStyle(.green) }
             Text("iOS 本地 session：\(responder.localSessionID ?? "--")\nLinux session：\(responder.pairedLinuxSessionID ?? "--（等待 ARM）")\nmeasurement=\(responder.activeMeasurement.map { String($0) } ?? "--") | pending ARM=\(responder.pendingArmMeasurement.map { String($0) } ?? "--")\n成功=\(responder.successfulResponses) | C1 未通过=\(responder.c1Rejected) | C2 失败=\(responder.c2Failures) | UDP 失败=\(responder.udpFailures)\nLinux质量=\(responder.lastLinuxQuality)\nreply_delay_samples=\(responder.lastReplyDelaySamples.map { String($0) } ?? "--") | t3_precise=\(responder.lastT3Precise)\ninput=\(responder.inputRoute)\noutput=\(responder.outputRoute)")
                 .font(.system(size: 10, design: .monospaced)).textSelection(.enabled)
+        }.card()
+    }
+
+    private var diagnosticsCard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Label("诊断与导出", systemImage: "wrench.and.screwdriver.fill")
+                .font(.subheadline.bold())
             HStack {
                 Button(showingLog ? "隐藏诊断日志" : "显示诊断日志") { showingLog.toggle() }
                 Button("清空界面日志") { responder.clearVisibleLog() }
-            }.font(.caption)
-            if let url = responder.sessionShareURL { ShareLink(item: url) { Label("导出会话目录", systemImage: "square.and.arrow.up") } }
-        }.card()
+            }
+            .font(.caption)
+            if let url = responder.sessionShareURL {
+                ShareLink(item: url) {
+                    Label("导出会话目录", systemImage: "square.and.arrow.up")
+                }
+            }
+        }
+        .card()
     }
 
     private var logCard: some View {

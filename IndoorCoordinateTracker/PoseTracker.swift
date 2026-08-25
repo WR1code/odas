@@ -88,6 +88,7 @@ struct CapturePoint: Identifiable, Sendable {
 }
 
 final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @unchecked Sendable {
+    let arSession = ARSession()
     @Published private(set) var currentPose = DevicePose.unavailable
     @Published private(set) var statusText = "等待 ARKit 初始化"
     @Published private(set) var capturePoints: [CapturePoint] = []
@@ -100,6 +101,8 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
     @Published private(set) var spatialReadiness = SpatialCalibrationReadiness.notStarted
 
     private let poseLock = NSLock()
+    private let arSessionLock = NSLock()
+    private var arSessionStarted = false
     private var latestPose = DevicePose.unavailable
     private var origin: SIMD3<Float>?
     private var originBasis: simd_float3x3?
@@ -127,6 +130,37 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
         poseLock.lock()
         defer { poseLock.unlock() }
         return latestPose
+    }
+
+    /// Keep one ARSession alive while SwiftUI moves the camera preview between
+    /// the Run and Spatial tabs. Starting a second session would reset ARKit's
+    /// world frame and invalidate an in-progress spatial scan.
+    func ensureARSessionRunning() {
+        arSessionLock.lock()
+        let shouldStart = !arSessionStarted
+        arSessionStarted = true
+        arSessionLock.unlock()
+        arSession.delegate = self
+        guard shouldStart else { return }
+        let configuration = ARWorldTrackingConfiguration()
+        configuration.worldAlignment = .gravity
+        configuration.environmentTexturing = .automatic
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
+            configuration.frameSemantics.insert(.sceneDepth)
+        }
+        arSession.run(configuration, options: [.resetTracking, .removeExistingAnchors])
+    }
+
+    func visualOriginTransform() -> simd_float4x4? {
+        poseLock.lock()
+        defer { poseLock.unlock() }
+        guard let origin, let basis = originBasis else { return nil }
+        return simd_float4x4(
+            SIMD4<Float>(basis.columns.0, 0),
+            SIMD4<Float>(basis.columns.1, 0),
+            SIMD4<Float>(basis.columns.2, 0),
+            SIMD4<Float>(origin, 1)
+        )
     }
 
     func resetOrigin() {

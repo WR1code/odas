@@ -67,6 +67,8 @@
 - C1/t2 与 C2/t3 分别冻结接收位姿和发射位姿；回传 Linux 的 Tx 位姿取 C2 发声时刻
 - 原生 SwiftUI 实时声学四图：iPhone 麦克风波形、C1 匹配滤波 remote RIR、最近 2 秒 Chirp Hann-STFT 时频图、0–24 kHz 接收频谱
 - C1/C2 探针显示实际 WAV 的 Peak、RMS、能量、峰均比、估计扫频范围与线性度，并分别显示 dBFS 频谱和时频图
+- 主界面分为运行、声学、空间、设置四个底部页签；声学页再切换实时四图和探针详情，减少单页滚动长度
+- 运行页和空间页都显示响应位置、朝向、水平仪及相机预览，并共享同一个持续 ARSession，切页不会重置世界坐标或中断空间扫描
 - Linux 定时自动采集运行时，可在 iPhone 点击“命令 Linux 立即采集一次”插入一轮；请求有来源校验、request-id 幂等和 ACK
 - ARKit/LiDAR `sceneDepth` 自动位置与姿态，使用 X 朝前、Y 朝左、Z 朝上的 FLU 世界坐标
 - Android 等价的手动 X/Y/Z、Yaw/Pitch/Roll 输入；可在运行中更新

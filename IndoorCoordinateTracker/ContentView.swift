@@ -123,6 +123,7 @@ struct ContentView: View {
                 pageScroll {
                     pageHeader(.settings)
                     networkCard
+                    udpTestCard
                     storageCard
                     diagnosticsCard
                     if showingLog { logCard }
@@ -572,27 +573,34 @@ struct ContentView: View {
 
     private var testCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("连通与播放测试", systemImage: "checkmark.circle").font(.subheadline.bold())
-            HStack {
-                Button {
-                    if let port = UInt16(resultPort) { responder.testUDP(host: linuxHost, port: port) }
-                } label: {
-                    Label(udpTestButtonTitle, systemImage: udpTestButtonIcon)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(udpTestButtonColor)
-                .disabled(responder.isRunning || responder.isTestingC2 || responder.udpTestState == .testing)
-                Button("TEST C2 单次") { responder.testC2Once(probes.c2) }
-                    .buttonStyle(.bordered).disabled(responder.isRunning || responder.isTestingC2)
-            }
-            Text("UDP：\(responder.udpTestSummary)；只表示网络往返，不代表本轮声学质量或 ToF 成功。")
-                .font(.caption2).foregroundStyle(udpTestButtonColor)
+            Label("C2 播放测试", systemImage: "speaker.wave.3.fill").font(.subheadline.bold())
+            Button("TEST C2 单次") { responder.testC2Once(probes.c2) }
+                .buttonStyle(.bordered).disabled(responder.isRunning || responder.isTestingC2)
             Button("TEST C2 ×20 稳定性") { responder.testC2Repeated(probes.c2) }
                 .buttonStyle(.bordered).disabled(responder.isRunning || responder.isTestingC2)
             if !responder.c2TestProgress.isEmpty {
                 Text(responder.c2TestProgress).font(.system(size: 9, design: .monospaced)).textSelection(.enabled)
             }
         }.card()
+    }
+
+    private var udpTestCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("UDP 双向连通测试", systemImage: "arrow.left.arrow.right.circle.fill")
+                .font(.subheadline.bold())
+            Button {
+                if let port = UInt16(resultPort) { responder.testUDP(host: linuxHost, port: port) }
+            } label: {
+                Label(udpTestButtonTitle, systemImage: udpTestButtonIcon)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(udpTestButtonColor)
+            .disabled(responder.isRunning || responder.isTestingC2 || responder.udpTestState == .testing)
+            Text("目标：\(linuxHost):\(resultPort)\n结果：\(responder.udpTestSummary)\n只验证 UDP 网络往返，不代表本轮声学质量或 ToF 成功。")
+                .font(.caption2).foregroundStyle(udpTestButtonColor)
+        }
+        .card()
     }
 
     private var metricsCard: some View {

@@ -429,22 +429,28 @@ private struct MonitorPanel<Content: View>: View {
 private struct WaveformPlot: View {
     let samples: [Float]
     var body: some View {
-        Canvas { context, size in
-            plotGrid(&context, size: size, horizontal: 4, vertical: 4)
-            guard samples.count > 1 else { return }
-            var path = Path()
-            for (index, value) in samples.enumerated() {
-                let point = CGPoint(
-                    x: CGFloat(index) / CGFloat(samples.count - 1) * size.width,
-                    y: size.height / 2 - CGFloat(max(-1, min(1, value))) * size.height * 0.46
-                )
-                if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
+        HStack(spacing: 2) {
+            VerticalAxisLabel(text: "PCM 幅度 (FS)")
+            Canvas { context, size in
+                plotGrid(&context, size: size, horizontal: 4, vertical: 4)
+                guard samples.count > 1 else { return }
+                var path = Path()
+                for (index, value) in samples.enumerated() {
+                    let point = CGPoint(
+                        x: CGFloat(index) / CGFloat(samples.count - 1) * size.width,
+                        y: size.height / 2 - CGFloat(max(-1, min(1, value))) * size.height * 0.46
+                    )
+                    if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
+                }
+                context.stroke(path, with: .color(.cyan), style: StrokeStyle(lineWidth: 1.1, lineJoin: .round))
+                context.draw(Text("+1").font(.system(size: 7)).foregroundStyle(.secondary), at: CGPoint(x: 2, y: 2), anchor: .topLeading)
+                context.draw(Text("0").font(.system(size: 7)).foregroundStyle(.secondary), at: CGPoint(x: 2, y: size.height / 2), anchor: .leading)
+                context.draw(Text("−1").font(.system(size: 7)).foregroundStyle(.secondary), at: CGPoint(x: 2, y: size.height - 2), anchor: .bottomLeading)
+                context.draw(Text("0 ms").font(.system(size: 7)).foregroundStyle(.secondary), at: CGPoint(x: 18, y: size.height - 2), anchor: .bottomLeading)
+                context.draw(Text("50 ms").font(.system(size: 7)).foregroundStyle(.secondary), at: CGPoint(x: size.width - 2, y: size.height - 2), anchor: .bottomTrailing)
             }
-            context.stroke(path, with: .color(.cyan), style: StrokeStyle(lineWidth: 1.1, lineJoin: .round))
-            context.draw(Text("−1").font(.system(size: 7)).foregroundStyle(.secondary), at: .zero, anchor: .topLeading)
-            context.draw(Text("+1 FS").font(.system(size: 7)).foregroundStyle(.secondary), at: CGPoint(x: 0, y: size.height), anchor: .bottomLeading)
+            .background(Color.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 6))
         }
-        .background(Color.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -452,21 +458,26 @@ private struct SpectrumPlot: View {
     let values: [Float]
     var tint: Color = .orange
     var body: some View {
-        Canvas { context, size in
-            plotGrid(&context, size: size, horizontal: 4, vertical: 4)
-            guard values.count > 1 else { return }
-            var path = Path()
-            for (index, value) in values.enumerated() {
-                let normalized = CGFloat((max(-120, min(0, value)) + 120) / 120)
-                let point = CGPoint(x: CGFloat(index) / CGFloat(values.count - 1) * size.width, y: size.height * (1 - normalized))
-                if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
+        HStack(spacing: 2) {
+            VerticalAxisLabel(text: "幅度 (dBFS)")
+            Canvas { context, size in
+                plotGrid(&context, size: size, horizontal: 4, vertical: 4)
+                guard values.count > 1 else { return }
+                var path = Path()
+                for (index, value) in values.enumerated() {
+                    let normalized = CGFloat((max(-120, min(0, value)) + 120) / 120)
+                    let point = CGPoint(x: CGFloat(index) / CGFloat(values.count - 1) * size.width, y: size.height * (1 - normalized))
+                    if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
+                }
+                context.stroke(path, with: .color(tint), lineWidth: 1.1)
+                context.draw(Text("0").font(.system(size: 7)).foregroundStyle(.secondary), at: CGPoint(x: 2, y: 2), anchor: .topLeading)
+                context.draw(Text("−60").font(.system(size: 7)).foregroundStyle(.secondary), at: CGPoint(x: 2, y: size.height / 2), anchor: .leading)
+                context.draw(Text("−120").font(.system(size: 7)).foregroundStyle(.secondary), at: CGPoint(x: 2, y: size.height - 2), anchor: .bottomLeading)
+                context.draw(Text("0 kHz").font(.system(size: 7)).foregroundStyle(.secondary), at: CGPoint(x: 24, y: size.height - 2), anchor: .bottomLeading)
+                context.draw(Text("24 kHz").font(.system(size: 7)).foregroundStyle(.secondary), at: CGPoint(x: size.width - 2, y: size.height - 2), anchor: .bottomTrailing)
             }
-            context.stroke(path, with: .color(tint), lineWidth: 1.1)
-            context.draw(Text("0 dBFS").font(.system(size: 7)).foregroundStyle(.secondary), at: .zero, anchor: .topLeading)
-            context.draw(Text("0").font(.system(size: 7)).foregroundStyle(.secondary), at: CGPoint(x: 0, y: size.height), anchor: .bottomLeading)
-            context.draw(Text("24 kHz").font(.system(size: 7)).foregroundStyle(.secondary), at: CGPoint(x: size.width, y: size.height), anchor: .bottomTrailing)
+            .background(Color.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 6))
         }
-        .background(Color.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -474,9 +485,12 @@ private struct RIRPlot: View {
     let samples: [Float]
     let preArrivalSamples: Int
     var body: some View {
-        VStack(spacing: 4) {
-            line(samples, range: 0..<samples.count, label: "完整 · −10…490 ms")
-            line(samples, range: 0..<min(samples.count, preArrivalSamples + 2_400), label: "到达点附近 · −10…50 ms")
+        HStack(spacing: 2) {
+            VerticalAxisLabel(text: "RIR 相对幅度")
+            VStack(spacing: 4) {
+                line(samples, range: 0..<samples.count, label: "完整 · −10…490 ms")
+                line(samples, range: 0..<min(samples.count, preArrivalSamples + 2_400), label: "到达点附近 · −10…50 ms")
+            }
         }
     }
 
@@ -497,6 +511,9 @@ private struct RIRPlot: View {
                 context.stroke(marker, with: .color(.yellow.opacity(0.8)), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
             }
             context.draw(Text(label).font(.system(size: 7)).foregroundStyle(.secondary), at: CGPoint(x: 4, y: 3), anchor: .topLeading)
+            context.draw(Text("+1").font(.system(size: 6)).foregroundStyle(.secondary), at: CGPoint(x: 2, y: 13), anchor: .topLeading)
+            context.draw(Text("0").font(.system(size: 6)).foregroundStyle(.secondary), at: CGPoint(x: 2, y: size.height / 2), anchor: .leading)
+            context.draw(Text("−1").font(.system(size: 6)).foregroundStyle(.secondary), at: CGPoint(x: 2, y: size.height - 2), anchor: .bottomLeading)
         }
         .background(Color.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 5))
     }
@@ -512,44 +529,48 @@ private struct HeatmapPlot: View {
     let yTop: String
 
     var body: some View {
-        Canvas { context, size in
-            guard columns > 0, rows > 0, values.count >= columns * rows else { return }
-            let cellWidth = size.width / CGFloat(columns), cellHeight = size.height / CGFloat(rows)
-            for column in 0..<columns {
-                for row in 0..<rows {
-                    let value = values[column * rows + row]
-                    let rect = CGRect(
-                        x: CGFloat(column) * cellWidth,
-                        y: size.height - CGFloat(row + 1) * cellHeight,
-                        width: cellWidth + 0.5, height: cellHeight + 0.5
-                    )
-                    context.fill(Path(rect), with: .color(heatColor(value)))
+        HStack(spacing: 2) {
+            VerticalAxisLabel(text: "频率 (kHz)")
+            Canvas { context, size in
+                guard columns > 0, rows > 0, values.count >= columns * rows else { return }
+                let cellWidth = size.width / CGFloat(columns), cellHeight = size.height / CGFloat(rows)
+                for column in 0..<columns {
+                    for row in 0..<rows {
+                        let value = values[column * rows + row]
+                        let rect = CGRect(
+                            x: CGFloat(column) * cellWidth,
+                            y: size.height - CGFloat(row + 1) * cellHeight,
+                            width: cellWidth + 0.5, height: cellHeight + 0.5
+                        )
+                        context.fill(Path(rect), with: .color(heatColor(value)))
+                    }
                 }
+                context.draw(Text(xLeft).font(.system(size: 7)).foregroundStyle(.white.opacity(0.75)), at: CGPoint(x: 18, y: size.height - 2), anchor: .bottomLeading)
+                context.draw(Text(xRight).font(.system(size: 7)).foregroundStyle(.white.opacity(0.75)), at: CGPoint(x: size.width - 20, y: size.height - 2), anchor: .bottomTrailing)
+                context.draw(Text(yTop).font(.system(size: 7)).foregroundStyle(.white.opacity(0.85)), at: CGPoint(x: 3, y: 2), anchor: .topLeading)
+                context.draw(Text("12").font(.system(size: 7)).foregroundStyle(.white.opacity(0.85)), at: CGPoint(x: 3, y: size.height / 2), anchor: .leading)
+                context.draw(Text(yBottom).font(.system(size: 7)).foregroundStyle(.white.opacity(0.85)), at: CGPoint(x: 3, y: size.height - 13), anchor: .bottomLeading)
             }
-            context.draw(Text(xLeft).font(.system(size: 7)).foregroundStyle(.white.opacity(0.75)), at: CGPoint(x: 3, y: size.height - 2), anchor: .bottomLeading)
-            context.draw(Text(xRight).font(.system(size: 7)).foregroundStyle(.white.opacity(0.75)), at: CGPoint(x: size.width - 3, y: size.height - 2), anchor: .bottomTrailing)
-            context.draw(Text(yTop).font(.system(size: 7)).foregroundStyle(.white.opacity(0.75)), at: CGPoint(x: 3, y: 2), anchor: .topLeading)
-            context.draw(Text(yBottom).font(.system(size: 7)).foregroundStyle(.white.opacity(0.75)), at: CGPoint(x: 3, y: size.height - 13), anchor: .bottomLeading)
-        }
-        .background(Color.black, in: RoundedRectangle(cornerRadius: 6))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(alignment: .trailing) {
-            HStack(spacing: 2) {
-                Rectangle()
-                    .fill(LinearGradient(
-                        colors: [.white, .yellow, .orange, .purple, .black],
-                        startPoint: .top, endPoint: .bottom
-                    ))
-                    .frame(width: 7)
-                VStack(spacing: 0) {
-                    Text("0")
-                    Spacer()
-                    Text("−100")
+            .background(Color.black, in: RoundedRectangle(cornerRadius: 6))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(alignment: .trailing) {
+                HStack(spacing: 2) {
+                    Rectangle()
+                        .fill(LinearGradient(
+                            colors: [.white, .yellow, .orange, .purple, .black],
+                            startPoint: .top, endPoint: .bottom
+                        ))
+                        .frame(width: 7)
+                    VStack(spacing: 0) {
+                        Text("0 dBFS")
+                        Spacer()
+                        Text("−100")
+                    }
+                    .font(.system(size: 6, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.8))
                 }
-                .font(.system(size: 6, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.8))
+                .padding(.vertical, 8).padding(.trailing, 3)
             }
-            .padding(.vertical, 8).padding(.trailing, 3)
         }
     }
 
@@ -562,6 +583,18 @@ private struct HeatmapPlot: View {
         }
         let value = (unit - 0.65) / 0.35
         return Color(red: 0.86 + value * 0.14, green: 0.16 + value * 0.84, blue: 0.38 + value * 0.35)
+    }
+}
+
+private struct VerticalAxisLabel: View {
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(.system(size: 7, weight: .medium))
+            .foregroundStyle(.secondary)
+            .fixedSize()
+            .rotationEffect(.degrees(-90))
+            .frame(width: 11)
     }
 }
 

@@ -462,25 +462,52 @@ struct ContentView: View {
 
     private var spatialReadinessPanel: some View {
         let readiness = poseTracker.spatialReadiness
+        let hasLinuxMap = poseTracker.linuxLidarMap != nil
+        let calibrationScore: Int? = readiness.hasCrossDeviceEstimate
+            ? readiness.score
+            : nil
         return VStack(alignment: .leading, spacing: 7) {
             HStack {
-                Label("统一坐标系标定就绪度", systemImage: "scope")
+                Label("手机扫描覆盖度", systemImage: "iphone.gen3.radiowaves.left.and.right")
                     .font(.caption.bold())
                 Spacer()
-                Text("\(readiness.score)%")
-                    .font(.headline.monospacedDigit()).foregroundStyle(readinessColor)
+                Text("\(readiness.coverageScore)%")
+                    .font(.headline.monospacedDigit()).foregroundStyle(coverageReadinessColor)
             }
-            ProgressView(value: Double(readiness.score), total: 100)
-                .tint(readinessColor)
-            Text(readiness.phase).font(.caption.bold()).foregroundStyle(readinessColor)
+            ProgressView(value: Double(readiness.coverageScore), total: 100)
+                .tint(coverageReadinessColor)
+            Text("仅根据 iPhone LiDAR 点数、空间跨度和移动视角计算，不代表已完成统一标定。")
+                .font(.caption2).foregroundStyle(.secondary)
+
+            Divider().padding(.vertical, 2)
+
+            HStack {
+                Label("跨设备标定就绪度", systemImage: "scope")
+                    .font(.caption.bold())
+                Spacer()
+                if let calibrationScore {
+                    Text("\(calibrationScore)%")
+                        .font(.headline.monospacedDigit()).foregroundStyle(calibrationReadinessColor)
+                } else {
+                    Text("等待评估")
+                        .font(.caption.bold()).foregroundStyle(.secondary)
+                }
+            }
+            ProgressView(value: Double(calibrationScore ?? 0), total: 100)
+                .tint(calibrationScore == nil ? Color.gray : calibrationReadinessColor)
+            Text(calibrationScore == nil ? "尚未获得点云配准结果" : readiness.phase)
+                .font(.caption.bold())
+                .foregroundStyle(calibrationScore == nil ? Color.secondary : calibrationReadinessColor)
             VStack(spacing: 3) {
                 HStack {
-                    Text("手机覆盖 \(readiness.coverageScore)%")
+                    Text(readiness.overlapRatio.map { String(format: "点云重叠 %.0f%%", $0 * 100) } ?? "点云重叠 --")
                     Spacer()
-                    Text(readiness.overlapRatio.map { String(format: "重叠 %.0f%%", $0 * 100) } ?? "重叠 --")
+                    Text(readiness.rmseM.map { String(format: "RMSE %.3fm", $0) } ?? "RMSE --")
                 }
                 HStack {
-                    Text(readiness.rmseM.map { String(format: "RMSE %.3fm", $0) } ?? "RMSE --")
+                    Text(calibrationScore == nil
+                        ? (hasLinuxMap ? "等待足够的手机深度点" : "需要先下载 Linux 点云")
+                        : "已获得跨设备配准评估")
                     Spacer()
                     Text("连续稳定 \(readiness.stableUpdates)/3")
                 }
@@ -491,16 +518,30 @@ struct ContentView: View {
                 .font(.caption2).foregroundStyle(.secondary)
         }
         .padding(10)
-        .background(readinessColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-        .overlay { RoundedRectangle(cornerRadius: 10).stroke(readinessColor.opacity(0.30)) }
+        .background(calibrationPanelColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .overlay { RoundedRectangle(cornerRadius: 10).stroke(calibrationPanelColor.opacity(0.30)) }
     }
 
-    private var readinessColor: Color {
+    private var coverageReadinessColor: Color {
+        switch poseTracker.spatialReadiness.coverageScore {
+        case 70...: return .green
+        case 40...: return .orange
+        default: return .cyan
+        }
+    }
+
+    private var calibrationReadinessColor: Color {
         switch poseTracker.spatialReadiness.score {
         case 85...: return .green
         case 55...: return .orange
         default: return .cyan
         }
+    }
+
+    private var calibrationPanelColor: Color {
+        return poseTracker.spatialReadiness.hasCrossDeviceEstimate
+            ? calibrationReadinessColor
+            : .gray
     }
 
     @ViewBuilder

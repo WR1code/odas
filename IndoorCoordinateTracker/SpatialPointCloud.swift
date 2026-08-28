@@ -27,11 +27,12 @@ struct SpatialCalibrationReadiness: Equatable, Sendable {
     let overlapRatio: Float?
     let rmseM: Float?
     let stableUpdates: Int
+    let hasCrossDeviceEstimate: Bool
 
     static let notStarted = SpatialCalibrationReadiness(
         score: 0, coverageScore: 0, phase: "尚未评估",
         guidance: "先下载 Linux 点云，再开始手机空间扫描。",
-        overlapRatio: nil, rmseM: nil, stableUpdates: 0
+        overlapRatio: nil, rmseM: nil, stableUpdates: 0, hasCrossDeviceEstimate: false
     )
 }
 
@@ -108,7 +109,7 @@ final class SpatialCalibrationReadinessEvaluator: @unchecked Sendable {
                 guidance: linux == nil
                     ? "手机覆盖正在计算；下载 Linux 点云后才能估算统一坐标系就绪度。"
                     : coverage.guidance,
-                overlapRatio: nil, rmseM: nil, stableUpdates: 0
+                overlapRatio: nil, rmseM: nil, stableUpdates: 0, hasCrossDeviceEstimate: false
             )
         }
 
@@ -120,7 +121,7 @@ final class SpatialCalibrationReadinessEvaluator: @unchecked Sendable {
                 score: min(coverage.score, 45), coverageScore: coverage.score,
                 phase: "尚未找到可靠重叠",
                 guidance: "请继续扫描 Linux 雷达也能看到的墙角、门框或桌角。",
-                overlapRatio: 0, rmseM: nil, stableUpdates: 0
+                overlapRatio: 0, rmseM: nil, stableUpdates: 0, hasCrossDeviceEstimate: true
             )
         }
 
@@ -155,7 +156,8 @@ final class SpatialCalibrationReadinessEvaluator: @unchecked Sendable {
         }
         return SpatialCalibrationReadiness(
             score: combined, coverageScore: coverage.score, phase: phase, guidance: guidance,
-            overlapRatio: match.overlap, rmseM: match.rmse, stableUpdates: stableUpdates
+            overlapRatio: match.overlap, rmseM: match.rmse, stableUpdates: stableUpdates,
+            hasCrossDeviceEstimate: true
         )
     }
 

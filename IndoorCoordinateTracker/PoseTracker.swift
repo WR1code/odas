@@ -199,7 +199,7 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
             guidance: !hasLinuxMap
                 ? "建议先下载 Linux 点云；当前先评估手机扫描覆盖。"
                 : "请缓慢扫描双方都能看到的墙角、门框和桌角。",
-            overlapRatio: nil, rmseM: nil, stableUpdates: 0
+            overlapRatio: nil, rmseM: nil, stableUpdates: 0, hasCrossDeviceEstimate: false
         )
         spatialCalibrationStatus = "正在扫描：请缓慢绕场并覆盖墙角、桌面和非对称物体"
     }
@@ -239,7 +239,9 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
                                 : "点云已上传，但标定未通过：\(reason)\(rmseText)"
                             let previous = self.spatialReadiness
                             self.spatialReadiness = SpatialCalibrationReadiness(
-                                score: accepted ? 100 : min(previous.score, 84),
+                                score: accepted
+                                    ? 100
+                                    : (previous.hasCrossDeviceEstimate ? min(previous.score, 84) : 0),
                                 coverageScore: previous.coverageScore,
                                 phase: accepted ? "正式标定通过" : "正式标定未通过",
                                 guidance: accepted
@@ -247,7 +249,8 @@ final class PoseTracker: NSObject, ObservableObject, ARSessionDelegate, @uncheck
                                     : reason,
                                 overlapRatio: inlierRatio.map { Float($0) } ?? previous.overlapRatio,
                                 rmseM: rmse.map { Float($0) } ?? previous.rmseM,
-                                stableUpdates: accepted ? max(previous.stableUpdates, 3) : previous.stableUpdates
+                                stableUpdates: accepted ? max(previous.stableUpdates, 3) : previous.stableUpdates,
+                                hasCrossDeviceEstimate: true
                             )
                         }
                     }

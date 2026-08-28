@@ -10,6 +10,7 @@ final class UDPControlServer: @unchecked Sendable {
     typealias MeasurementQualityHandler = @Sendable (MeasurementQualityResult, String) -> MeasurementQualityAcceptResult
     typealias LidarMapCaptureUpdateHandler = @Sendable (LidarMapCaptureUpdate, String) -> Void
     typealias SharedOriginUpdateHandler = @Sendable (SharedOriginUpdate, String) -> Void
+    typealias C2BandTestHandler = @Sendable (C2BandTestCommand, String) -> C2BandTestAcceptResult
 
     private let port: UInt16
     private let allowedHost: String
@@ -21,6 +22,7 @@ final class UDPControlServer: @unchecked Sendable {
     private let onMeasurementQuality: MeasurementQualityHandler
     private let onLidarMapCaptureUpdate: LidarMapCaptureUpdateHandler
     private let onSharedOriginUpdate: SharedOriginUpdateHandler
+    private let onC2BandTest: C2BandTestHandler
     private let onLog: @Sendable (String) -> Void
     private let queue = DispatchQueue(label: "com.avtwin.ios.udp-control", qos: .userInitiated)
     private let stateLock = NSLock()
@@ -38,6 +40,7 @@ final class UDPControlServer: @unchecked Sendable {
         onMeasurementQuality: @escaping MeasurementQualityHandler,
         onLidarMapCaptureUpdate: @escaping LidarMapCaptureUpdateHandler,
         onSharedOriginUpdate: @escaping SharedOriginUpdateHandler,
+        onC2BandTest: @escaping C2BandTestHandler,
         onLog: @escaping @Sendable (String) -> Void
     ) {
         self.port = port
@@ -50,6 +53,7 @@ final class UDPControlServer: @unchecked Sendable {
         self.onMeasurementQuality = onMeasurementQuality
         self.onLidarMapCaptureUpdate = onLidarMapCaptureUpdate
         self.onSharedOriginUpdate = onSharedOriginUpdate
+        self.onC2BandTest = onC2BandTest
         self.onLog = onLog
     }
 
@@ -152,6 +156,25 @@ final class UDPControlServer: @unchecked Sendable {
                     Self.send(data, descriptor: socketDescriptor, to: &sourceAddress, length: sourceLength)
                 }
                 onLog("UDP_TEST_REPLY 已发送至 \(source)")
+                continue
+            }
+            if let command = C2BandTestCommand(json: json) {
+                let result = onC2BandTest(command, sourceHost)
+                let acknowledgement: [String: Any] = [
+                    "protocol": "AVTWIN_C2_BAND_TEST_V1",
+                    "type": "c2_band_test_ack",
+                    "protocol_version": 1,
+                    "test_id": command.testID,
+                    "accepted": result.accepted,
+                    "reason": result.reason,
+                    "actual_c2_pcm_sha256": result.actualC2PCMHash,
+                    "expected_c2_pcm_sha256": command.expectedC2PCMHash,
+                    "receiver": "ios"
+                ]
+                if let data = try? JSONWire.encode(acknowledgement) {
+                    Self.send(data, descriptor: socketDescriptor, to: &sourceAddress, length: sourceLength)
+                }
+                onLog("C2_BAND_TEST_ACK test=\(command.testID) accepted=\(result.accepted) reason=\(result.reason)")
                 continue
             }
             if let acknowledgement = ReplyAcknowledgement(json: json) {

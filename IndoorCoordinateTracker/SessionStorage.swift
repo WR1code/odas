@@ -144,6 +144,35 @@ final class SessionStorage: @unchecked Sendable {
         queue.async { try? WavWriter.writeMonoPCM16(samples, to: audioURL.appendingPathComponent(safe)) }
     }
 
+    static func saveC2BandTest(
+        root: URL?, testID: String, probe: ProbeDefinition,
+        recording: [Float], metadata: [String: Any]
+    ) throws -> URL {
+        let selectedRoot: URL
+        let accessStarted: Bool
+        if let root {
+            selectedRoot = root
+            accessStarted = root.startAccessingSecurityScopedResource()
+            try FolderSelectionStore.validate(root)
+        } else {
+            selectedRoot = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("AVTwin", isDirectory: true)
+            accessStarted = false
+            try FileManager.default.createDirectory(at: selectedRoot, withIntermediateDirectories: true)
+        }
+        defer { if accessStarted { selectedRoot.stopAccessingSecurityScopedResource() } }
+        let formatter = DateFormatter(); formatter.dateFormat = "yyyyMMdd_HHmmss"
+        let safeID = testID.replacingOccurrences(of: "[^A-Za-z0-9._-]", with: "_", options: .regularExpression)
+        let directory = selectedRoot
+            .appendingPathComponent("C2BandTests", isDirectory: true)
+            .appendingPathComponent("\(formatter.string(from: Date()))_\(safeID)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try WavWriter.writeMonoPCM16(probe.samples, to: directory.appendingPathComponent("c2_reference.wav"))
+        try WavWriter.writeMonoPCM16(recording, to: directory.appendingPathComponent("ios_self_recording.wav"))
+        try writeJSON(metadata, to: directory.appendingPathComponent("report.json"))
+        return directory
+    }
+
     func close() {
         queue.sync {}
         if securityAccessStarted { rootURL.stopAccessingSecurityScopedResource() }

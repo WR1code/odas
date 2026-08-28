@@ -619,6 +619,12 @@ struct ContentView: View {
                 .buttonStyle(.bordered).disabled(responder.isRunning || responder.isTestingC2)
             Button("TEST C2 ×20 稳定性") { responder.testC2Repeated(probes.c2) }
                 .buttonStyle(.bordered).disabled(responder.isRunning || responder.isTestingC2)
+            Button("TEST C2 全频带 ×20（measurement + 本机回环）") {
+                responder.testC2FullBand(probes.c2)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.purple)
+            .disabled(responder.isRunning || responder.isTestingC2)
             if !responder.c2TestProgress.isEmpty {
                 Text(responder.c2TestProgress).font(.system(size: 9, design: .monospaced)).textSelection(.enabled)
             }

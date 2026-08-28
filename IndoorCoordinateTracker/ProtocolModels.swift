@@ -232,6 +232,61 @@ struct CaptureCommandResult: Sendable {
     let reason: String
 }
 
+struct C2BandTestCommand: Sendable {
+    let protocolVersion: Int
+    let testID: String
+    let linuxResultPort: UInt16
+    let repetitions: Int
+    let intervalSeconds: Double
+    let preRollSeconds: Double
+    let tailSeconds: Double
+    let expectedC2PCMHash: String
+
+    init(localTestID: String, repetitions: Int) {
+        protocolVersion = 1
+        testID = localTestID
+        linuxResultPort = 5005
+        self.repetitions = min(20, max(1, repetitions))
+        intervalSeconds = 2.0
+        preRollSeconds = 0.25
+        tailSeconds = 0.50
+        expectedC2PCMHash = ""
+    }
+
+    init?(json: [String: Any]) {
+        guard JSONWire.string(json, "protocol") == "AVTWIN_C2_BAND_TEST_V1",
+              JSONWire.string(json, "type") == "c2_band_test_start",
+              let version = JSONWire.int64(json, "protocol_version"), version == 1,
+              let testID = JSONWire.string(json, "test_id"), !testID.isEmpty,
+              let rawPort = JSONWire.int64(json, "linux_result_port"),
+              let port = UInt16(exactly: rawPort), port > 0,
+              let rawRepetitions = JSONWire.int64(json, "repetitions"),
+              (1...20).contains(rawRepetitions)
+        else { return nil }
+        let interval = (json["interval_s"] as? NSNumber)?.doubleValue ?? 2.0
+        let preRoll = (json["pre_roll_s"] as? NSNumber)?.doubleValue ?? 0.25
+        let tail = (json["tail_s"] as? NSNumber)?.doubleValue ?? 0.50
+        guard interval.isFinite, interval >= 1.0, interval <= 10.0,
+              preRoll.isFinite, preRoll >= 0.1, preRoll <= 2.0,
+              tail.isFinite, tail >= 0.2, tail <= 5.0
+        else { return nil }
+        protocolVersion = Int(version)
+        self.testID = testID
+        linuxResultPort = port
+        repetitions = Int(rawRepetitions)
+        intervalSeconds = interval
+        preRollSeconds = preRoll
+        tailSeconds = tail
+        expectedC2PCMHash = JSONWire.string(json, "c2_pcm_sha256") ?? ""
+    }
+}
+
+struct C2BandTestAcceptResult: Sendable {
+    let accepted: Bool
+    let reason: String
+    let actualC2PCMHash: String
+}
+
 struct CaptureOnceAcknowledgement: Sendable {
     let requestID: String
     let accepted: Bool

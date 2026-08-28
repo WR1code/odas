@@ -590,6 +590,15 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
 
     func testC2Once(_ probe: ProbeDefinition) { testC2(probe, repetitions: 1) }
     func testC2Repeated(_ probe: ProbeDefinition) { testC2(probe, repetitions: 20) }
+    func testC2FullBand(_ probe: ProbeDefinition) {
+        let testID = UUID().uuidString
+        let config = preparedConfiguration
+        let command = C2BandTestCommand(localTestID: testID, repetitions: 20)
+        _ = startC2BandTest(
+            probe: probe, command: command,
+            linuxHost: config?.linuxHost, resultRootURL: config?.resultRootURL,
+        )
+    }
 
     private func testC2(_ probe: ProbeDefinition, repetitions: Int) {
         stateLock.lock()
@@ -631,6 +640,202 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             }
             self.stateLock.lock(); self.testRunningValue = false; self.stateLock.unlock()
         }
+    }
+
+    private func startC2BandTest(
+        probe: ProbeDefinition, command: C2BandTestCommand,
+        linuxHost: String?, resultRootURL: URL?
+    ) -> C2BandTestAcceptResult {
+        stateLock.lock()
+        let unavailable = runningValue || testRunningValue
+        if !unavailable { testRunningValue = true }
+        stateLock.unlock()
+        guard !unavailable else {
+            return .init(accepted: false, reason: "audio_session_busy", actualC2PCMHash: probe.internalPCMSHA256)
+        }
+        guard AVAudioSession.sharedInstance().recordPermission == .granted else {
+            stateLock.lock(); testRunningValue = false; stateLock.unlock()
+            return .init(accepted: false, reason: "record_audio_permission_missing", actualC2PCMHash: probe.internalPCMSHA256)
+        }
+        let hashMatches = command.expectedC2PCMHash.isEmpty
+            || command.expectedC2PCMHash == probe.internalPCMSHA256
+        DispatchQueue.main.async {
+            self.isTestingC2 = true
+            self.c2TestProgress = "C2 全频带测试准备中 test=\(command.testID)\n"
+        }
+        responseQueue.async { [weak self] in
+            self?.runC2BandTest(
+                probe: probe, command: command, linuxHost: linuxHost,
+                resultRootURL: resultRootURL, hashMatches: hashMatches,
+            )
+        }
+        return .init(
+            accepted: true,
+            reason: hashMatches ? "accepted" : "accepted_probe_hash_mismatch",
+            actualC2PCMHash: probe.internalPCMSHA256,
+        )
+    }
+
+    private func runC2BandTest(
+        probe: ProbeDefinition, command: C2BandTestCommand,
+        linuxHost: String?, resultRootURL: URL?, hashMatches: Bool
+    ) {
+        let captureLock = NSLock()
+        var captured: [Float] = []
+        var playbackRows: [[String: Any]] = []
+        var testEngine: AVAudioEngine?
+        var testPlayer: AVAudioPlayerNode?
+        var inputTapInstalled = false
+        var failure: String?
+
+        func send(_ object: [String: Any]) {
+            guard let linuxHost, !linuxHost.isEmpty else { return }
+            do {
+                _ = try UDPControlServer.sendJSON(object, host: linuxHost, port: command.linuxResultPort)
+            } catch {
+                self.appendLog("C2_BAND_TEST UDP send failed: \(error.localizedDescription)")
+            }
+        }
+
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker])
+            try session.setPreferredSampleRate(ProbeDefaults.sampleRate)
+            try session.setPreferredIOBufferDuration(0.005)
+            try session.setActive(true)
+            guard abs(session.sampleRate - ProbeDefaults.sampleRate) < 1 else {
+                throw appError("C2 全频带测试要求 48 kHz，当前为 \(session.sampleRate)")
+            }
+            let engine = AVAudioEngine(), player = AVAudioPlayerNode()
+            testEngine = engine; testPlayer = player
+            engine.attach(player)
+            let outputFormat = AVAudioFormat(
+                standardFormatWithSampleRate: ProbeDefaults.sampleRate, channels: 1
+            )!
+            engine.connect(player, to: engine.mainMixerNode, format: outputFormat)
+            let input = engine.inputNode
+            let inputFormat = input.inputFormat(forBus: 0)
+            guard abs(inputFormat.sampleRate - ProbeDefaults.sampleRate) < 1,
+                  inputFormat.channelCount > 0 else {
+                throw appError("iPhone 麦克风无法以 48 kHz 运行")
+            }
+            input.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { buffer, _ in
+                guard let source = buffer.floatChannelData?[0] else { return }
+                let values = Array(UnsafeBufferPointer(start: source, count: Int(buffer.frameLength)))
+                captureLock.lock(); captured.append(contentsOf: values); captureLock.unlock()
+            }
+            inputTapInstalled = true
+            let buffer = try Self.audioBuffer(probe.samples, format: outputFormat)
+            engine.prepare(); try engine.start()
+            Thread.sleep(forTimeInterval: command.preRollSeconds)
+            let scheduleOrigin = ProcessInfo.processInfo.systemUptime
+            for index in 1...command.repetitions {
+                let target = scheduleOrigin + Double(index - 1) * command.intervalSeconds
+                let remaining = target - ProcessInfo.processInfo.systemUptime
+                if remaining > 0 { Thread.sleep(forTimeInterval: remaining) }
+                captureLock.lock(); let localStartSample = captured.count; captureLock.unlock()
+                let outputVolume = session.outputVolume
+                let event: [String: Any] = [
+                    "protocol": "AVTWIN_C2_BAND_TEST_V1",
+                    "type": "c2_band_test_playback",
+                    "protocol_version": 1,
+                    "test_id": command.testID,
+                    "index": index,
+                    "repetitions": command.repetitions,
+                    "ios_capture_start_sample": localStartSample,
+                    "ios_output_volume": outputVolume,
+                    "output_route": session.currentRoute.outputs.map(\.portName).joined(separator: ","),
+                    "c2_pcm_sha256": probe.internalPCMSHA256,
+                    "probe_hash_matches_linux": hashMatches,
+                ]
+                send(event)
+                let completion = DispatchSemaphore(value: 0)
+                player.stop()
+                player.scheduleBuffer(
+                    buffer, at: nil, options: .interrupts,
+                    completionCallbackType: .dataPlayedBack
+                ) { _ in completion.signal() }
+                player.play()
+                let verified = completion.wait(
+                    timeout: .now() + .milliseconds(Int(probe.durationMilliseconds + 800))
+                ) == .success
+                var row = event
+                row["data_played_back"] = verified
+                playbackRows.append(row)
+                DispatchQueue.main.async {
+                    self.c2TestProgress += "[\(index)/\(command.repetitions)] \(verified ? "PASS" : "FAIL") volume=\(String(format: "%.3f", outputVolume))\n"
+                }
+            }
+            Thread.sleep(forTimeInterval: command.tailSeconds)
+            input.removeTap(onBus: 0)
+            inputTapInstalled = false
+            player.stop(); engine.stop()
+            try? session.setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            failure = error.localizedDescription
+            if let engine = testEngine, inputTapInstalled {
+                engine.inputNode.removeTap(onBus: 0)
+                inputTapInstalled = false
+            }
+            if let engine = testEngine {
+                engine.stop()
+            }
+            testPlayer?.stop()
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
+
+        captureLock.lock(); let recording = captured; captureLock.unlock()
+        var metadata: [String: Any] = [
+            "protocol": "AVTWIN_C2_BAND_TEST_V1",
+            "test_id": command.testID,
+            "sample_rate": Int(ProbeDefaults.sampleRate),
+            "repetitions": command.repetitions,
+            "interval_s": command.intervalSeconds,
+            "pre_roll_s": command.preRollSeconds,
+            "tail_s": command.tailSeconds,
+            "recording_frames": recording.count,
+            "c2_name": probe.name,
+            "c2_internal_pcm_sha256": probe.internalPCMSHA256,
+            "linux_expected_c2_pcm_sha256": command.expectedC2PCMHash,
+            "probe_hash_matches_linux": hashMatches,
+            "playbacks": playbackRows,
+            "success": failure == nil,
+            "error": failure.map { $0 as Any } ?? NSNull(),
+        ]
+        var savedPath = ""
+        if !recording.isEmpty {
+            do {
+                let directory = try SessionStorage.saveC2BandTest(
+                    root: resultRootURL, testID: command.testID, probe: probe,
+                    recording: recording, metadata: metadata,
+                )
+                savedPath = directory.path
+            } catch {
+                failure = failure ?? "保存失败：\(error.localizedDescription)"
+                metadata["success"] = false
+                metadata["error"] = failure!
+            }
+        }
+        send([
+            "protocol": "AVTWIN_C2_BAND_TEST_V1",
+            "type": "c2_band_test_complete",
+            "protocol_version": 1,
+            "test_id": command.testID,
+            "success": failure == nil,
+            "error": failure.map { $0 as Any } ?? NSNull(),
+            "recording_frames": recording.count,
+            "playbacks_completed": playbackRows.count,
+            "probe_hash_matches_linux": hashMatches,
+            "ios_output_path": savedPath,
+        ])
+        DispatchQueue.main.async {
+            self.c2TestProgress += failure == nil
+                ? "RESULT: PASS · 完整本机回环已保存\n\(savedPath)"
+                : "RESULT: FAIL · \(failure!)"
+            self.isTestingC2 = false
+            if !savedPath.isEmpty { self.sessionShareURL = URL(fileURLWithPath: savedPath) }
+        }
+        stateLock.lock(); testRunningValue = false; stateLock.unlock()
     }
 
     private func startAfterPermission(_ config: ResponderConfiguration) {
@@ -931,6 +1136,18 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             },
             onSharedOriginUpdate: { [weak self] update, source in
                 self?.receiveSharedOriginUpdate(update, source: source)
+            },
+            onC2BandTest: { [weak self] command, sourceHost in
+                guard let self else {
+                    return .init(accepted: false, reason: "responder_unavailable", actualC2PCMHash: config.c2.internalPCMSHA256)
+                }
+                guard command.linuxResultPort == config.resultPort else {
+                    return .init(accepted: false, reason: "linux_result_port_mismatch", actualC2PCMHash: config.c2.internalPCMSHA256)
+                }
+                return self.startC2BandTest(
+                    probe: config.c2, command: command,
+                    linuxHost: sourceHost, resultRootURL: config.resultRootURL,
+                )
             },
             onLog: { [weak self] message in self?.appendLog(message) }
         )

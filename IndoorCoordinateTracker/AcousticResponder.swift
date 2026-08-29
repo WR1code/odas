@@ -785,6 +785,76 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         }
 
         captureLock.lock(); let recording = captured; captureLock.unlock()
+        var selfDetectionRows: [[String: Any]] = []
+        var selfDetectionDelays: [Int64] = []
+        var selfDetectionScores: [Double] = []
+        for index in playbackRows.indices {
+            guard let marker = playbackRows[index]["ios_capture_start_sample"] as? Int else { continue }
+            let nextMarker = index + 1 < playbackRows.count
+                ? playbackRows[index + 1]["ios_capture_start_sample"] as? Int
+                : nil
+            let windowStart = max(0, marker - 2_400)
+            let nominalEnd = marker + 43_200
+            let windowEnd = min(recording.count, nextMarker.map { min(nominalEnd, $0 - 2_400) } ?? nominalEnd)
+            let detection: LocalC2Detection? = windowEnd > windowStart
+                ? LocalC2AcousticDetector.detect(
+                    audio: Array(recording[windowStart..<windowEnd]),
+                    windowStartSample: Int64(windowStart),
+                    fullTemplate: probe.samples,
+                    searchStartSample: Int64(marker)
+                )
+                : nil
+            let delay = detection.map { $0.t3Sample - Int64(marker) }
+            if let detection, let delay {
+                selfDetectionDelays.append(delay)
+                selfDetectionScores.append(detection.score)
+            }
+            let row: [String: Any] = [
+                "index": index + 1,
+                "playback_issue_capture_sample": marker,
+                "detected": detection != nil,
+                "t3_sample": detection.map { $0.t3Sample as Any } ?? NSNull(),
+                "issue_to_detection_samples": delay.map { $0 as Any } ?? NSNull(),
+                "issue_to_detection_ms": delay.map { (Double($0) * 1_000.0 / ProbeDefaults.sampleRate) as Any } ?? NSNull(),
+                "score": detection.map { $0.score as Any } ?? NSNull(),
+                "segment_offset_samples": detection.map { $0.segmentOffsetSamples as Any } ?? NSNull(),
+                "segment_length_samples": detection.map { $0.segmentLengthSamples as Any } ?? NSNull()
+            ]
+            selfDetectionRows.append(row)
+            playbackRows[index]["self_acoustic_detection"] = row
+        }
+        let sortedDelays = selfDetectionDelays.sorted()
+        let delayMean = selfDetectionDelays.isEmpty ? nil
+            : Double(selfDetectionDelays.reduce(0, +)) / Double(selfDetectionDelays.count)
+        let delayMedian: Double? = sortedDelays.isEmpty ? nil : {
+            let middle = sortedDelays.count / 2
+            return sortedDelays.count.isMultiple(of: 2)
+                ? Double(sortedDelays[middle - 1] + sortedDelays[middle]) / 2.0
+                : Double(sortedDelays[middle])
+        }()
+        let delayStddev = delayMean.map { mean in
+            sqrt(selfDetectionDelays.reduce(0.0) { partial, value in
+                partial + pow(Double(value) - mean, 2)
+            } / Double(selfDetectionDelays.count))
+        }
+        let delayP95: Int64? = sortedDelays.isEmpty ? nil
+            : sortedDelays[min(sortedDelays.count - 1, max(0, Int(ceil(Double(sortedDelays.count) * 0.95)) - 1))]
+        let sortedScores = selfDetectionScores.sorted()
+        let scoreMedian: Double? = sortedScores.isEmpty ? nil : sortedScores[sortedScores.count / 2]
+        let selfDetectionSummary: [String: Any] = [
+            "method": "LocalC2AcousticDetector_same_as_handshake",
+            "threshold": 0.25,
+            "requested_rounds": command.repetitions,
+            "detected_rounds": selfDetectionDelays.count,
+            "success_rate": Double(selfDetectionDelays.count) / Double(max(1, command.repetitions)),
+            "issue_to_detection_samples_median": delayMedian.map { $0 as Any } ?? NSNull(),
+            "issue_to_detection_samples_mean": delayMean.map { $0 as Any } ?? NSNull(),
+            "issue_to_detection_samples_stddev": delayStddev.map { $0 as Any } ?? NSNull(),
+            "issue_to_detection_samples_p95": delayP95.map { $0 as Any } ?? NSNull(),
+            "score_median": scoreMedian.map { $0 as Any } ?? NSNull(),
+            "interpretation": "repeatability diagnostic; playback call is not physical acoustic emission time",
+            "rounds": selfDetectionRows
+        ]
         var metadata: [String: Any] = [
             "protocol": "AVTWIN_C2_BAND_TEST_V1",
             "test_id": command.testID,
@@ -799,6 +869,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             "linux_expected_c2_pcm_sha256": command.expectedC2PCMHash,
             "probe_hash_matches_linux": hashMatches,
             "playbacks": playbackRows,
+            "ios_self_acoustic_detection": selfDetectionSummary,
             "success": failure == nil,
             "error": failure.map { $0 as Any } ?? NSNull(),
         ]
@@ -828,10 +899,13 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             "probe_hash_matches_linux": hashMatches,
             "ios_output_path": savedPath,
         ])
+        let finalProgress = failure == nil
+            ? "RESULT: PASS · 本机声学检测 \(selfDetectionDelays.count)/\(command.repetitions)"
+                + (delayMedian.map { " · median=\(String(format: "%.1f", $0)) samples" } ?? "")
+                + "\n完整本机回环已保存\n\(savedPath)"
+            : "RESULT: FAIL · \(failure!)"
         DispatchQueue.main.async {
-            self.c2TestProgress += failure == nil
-                ? "RESULT: PASS · 完整本机回环已保存\n\(savedPath)"
-                : "RESULT: FAIL · \(failure!)"
+            self.c2TestProgress += finalProgress
             self.isTestingC2 = false
             if !savedPath.isEmpty { self.sessionShareURL = URL(fileURLWithPath: savedPath) }
         }

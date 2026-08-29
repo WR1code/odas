@@ -7,6 +7,7 @@ final class UDPControlServer: @unchecked Sendable {
     typealias CaptureStartHandler = @Sendable (CaptureStartCommand, String) -> CaptureCommandResult
     typealias CaptureStopHandler = @Sendable (CaptureStopCommand, String) -> CaptureCommandResult
     typealias CaptureOnceAckHandler = @Sendable (CaptureOnceAcknowledgement, String) -> Void
+    typealias LinuxCaptureStateHandler = @Sendable (LinuxCaptureStateUpdate, String) -> Void
     typealias MeasurementQualityHandler = @Sendable (MeasurementQualityResult, String) -> MeasurementQualityAcceptResult
     typealias LidarMapCaptureUpdateHandler = @Sendable (LidarMapCaptureUpdate, String) -> Void
     typealias SharedOriginUpdateHandler = @Sendable (SharedOriginUpdate, String) -> Void
@@ -19,6 +20,7 @@ final class UDPControlServer: @unchecked Sendable {
     private let onCaptureStart: CaptureStartHandler
     private let onCaptureStop: CaptureStopHandler
     private let onCaptureOnceAck: CaptureOnceAckHandler
+    private let onLinuxCaptureState: LinuxCaptureStateHandler
     private let onMeasurementQuality: MeasurementQualityHandler
     private let onLidarMapCaptureUpdate: LidarMapCaptureUpdateHandler
     private let onSharedOriginUpdate: SharedOriginUpdateHandler
@@ -37,6 +39,7 @@ final class UDPControlServer: @unchecked Sendable {
         onCaptureStart: @escaping CaptureStartHandler,
         onCaptureStop: @escaping CaptureStopHandler,
         onCaptureOnceAck: @escaping CaptureOnceAckHandler,
+        onLinuxCaptureState: @escaping LinuxCaptureStateHandler,
         onMeasurementQuality: @escaping MeasurementQualityHandler,
         onLidarMapCaptureUpdate: @escaping LidarMapCaptureUpdateHandler,
         onSharedOriginUpdate: @escaping SharedOriginUpdateHandler,
@@ -50,6 +53,7 @@ final class UDPControlServer: @unchecked Sendable {
         self.onCaptureStart = onCaptureStart
         self.onCaptureStop = onCaptureStop
         self.onCaptureOnceAck = onCaptureOnceAck
+        self.onLinuxCaptureState = onLinuxCaptureState
         self.onMeasurementQuality = onMeasurementQuality
         self.onLidarMapCaptureUpdate = onLidarMapCaptureUpdate
         self.onSharedOriginUpdate = onSharedOriginUpdate
@@ -183,6 +187,10 @@ final class UDPControlServer: @unchecked Sendable {
             }
             if let acknowledgement = CaptureOnceAcknowledgement(json: json) {
                 onCaptureOnceAck(acknowledgement, source)
+                continue
+            }
+            if let update = LinuxCaptureStateUpdate(json: json) {
+                onLinuxCaptureState(update, source)
                 continue
             }
             if let update = LidarMapCaptureUpdate(json: json) {

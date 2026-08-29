@@ -56,6 +56,9 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     @Published private(set) var sessionShareURL: URL?
     @Published private(set) var c2TestProgress = ""
     @Published private(set) var captureRequestStatus = "尚未请求"
+    @Published private(set) var linuxCaptureState = "UNKNOWN"
+    @Published private(set) var linuxReadyForCapture = false
+    @Published private(set) var linuxCaptureQueueDepth = 0
     @Published private(set) var udpTestState: UDPTestState = .idle
     @Published private(set) var udpTestSummary = "尚未测试"
     @Published private(set) var lastLinuxQuality = "尚未收到 Linux 质量结果"
@@ -565,6 +568,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         DispatchQueue.main.async {
             UIApplication.shared.isIdleTimerDisabled = false
             self.isRunning = false; self.isPaused = false; self.stateName = "STOPPED"
+            self.linuxCaptureState = "IDLE"; self.linuxReadyForCapture = false; self.linuxCaptureQueueDepth = 0
             self.status = wasActive ? "已安全停止，日志已保存" : self.status
             if self.idleListenerEnabled, let config = self.preparedConfiguration { self.configureIdle(config) }
         }
@@ -958,6 +962,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             DispatchQueue.main.async {
                 self.sessionLogPath = storage.path; self.sessionShareURL = storage.shareURL
                 self.isRunning = true; self.isPaused = false; self.stateName = "LISTENING"
+                self.linuxCaptureState = "UNKNOWN"; self.linuxReadyForCapture = false; self.linuxCaptureQueueDepth = 0
                 self.pairedLinuxSessionID = nil; self.activeMeasurement = nil; self.pendingArmMeasurement = nil
                 self.status = "等待 Linux ARM，然后监听 C1"
                 self.publishCounters()
@@ -1201,6 +1206,14 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
                     "reason": acknowledgement.reason, "source": source,
                     "measurement_id": acknowledgement.measurementID.map { $0 as Any } ?? NSNull()
                 ])
+            },
+            onLinuxCaptureState: { [weak self] update, _ in
+                guard let self else { return }
+                DispatchQueue.main.async {
+                    self.linuxCaptureState = update.state
+                    self.linuxReadyForCapture = update.readyForCapture
+                    self.linuxCaptureQueueDepth = update.queuedRequests
+                }
             },
             onMeasurementQuality: { [weak self] quality, source in
                 guard let self else { return .init(accepted: false, reason: "responder_unavailable") }

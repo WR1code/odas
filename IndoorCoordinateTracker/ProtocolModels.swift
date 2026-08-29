@@ -130,6 +130,28 @@ struct MeasurementQualityResult: Sendable {
     }
 }
 
+struct LinuxCaptureStateUpdate: Sendable {
+    let state: String
+    let readyForCapture: Bool
+    let queuedRequests: Int
+    let measurementID: Int64?
+    let paused: Bool
+
+    init?(json: [String: Any]) {
+        guard JSONWire.string(json, "type") == "linux_capture_state",
+              let version = JSONWire.int64(json, "protocol_version"), version == 1,
+              let state = JSONWire.string(json, "state"), !state.isEmpty,
+              let readyForCapture = JSONWire.bool(json, "ready_for_capture"),
+              let queuedRequests = JSONWire.int64(json, "queued_requests"), queuedRequests >= 0
+        else { return nil }
+        self.state = state
+        self.readyForCapture = readyForCapture
+        self.queuedRequests = Int(queuedRequests)
+        measurementID = JSONWire.int64(json, "measurement_id")
+        paused = JSONWire.bool(json, "paused") ?? false
+    }
+}
+
 struct LidarMapCaptureUpdate: Sendable {
     let commandID: String
     let messageType: String

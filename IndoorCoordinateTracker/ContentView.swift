@@ -607,10 +607,13 @@ struct ContentView: View {
     private var sessionCard: some View {
         VStack(spacing: 10) {
             if responder.isRunning {
+                linuxCaptureReadinessBanner
                 Button { responder.requestCaptureOnce() } label: {
                     Label("命令 Linux 立即采集一次", systemImage: "record.circle").frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent).tint(.blue).disabled(responder.isPaused)
+                .buttonStyle(.borderedProminent)
+                .tint(responder.linuxReadyForCapture ? .green : (responder.linuxCaptureQueueDepth > 0 ? .orange : .blue))
+                .disabled(responder.isPaused)
                 Text(responder.captureRequestStatus).font(.caption2).foregroundStyle(.secondary)
                 HStack {
                     Button(responder.isPaused ? "继续监听" : "暂停监听") {
@@ -647,6 +650,42 @@ struct ContentView: View {
                     .buttonStyle(.borderedProminent).tint(.green).disabled(!configurationValid || responder.isTestingC2)
             }
         }.card()
+    }
+
+    private var linuxCaptureReadinessBanner: some View {
+        let queued = responder.linuxCaptureQueueDepth
+        let ready = responder.linuxReadyForCapture && queued == 0
+        let paused = responder.isPaused || responder.linuxCaptureState == "PAUSED"
+        let title: String = {
+            if paused { return "采集已暂停" }
+            if queued > 0 { return "已排队 \(queued) 轮" }
+            if ready { return "可以再次采集" }
+            switch responder.linuxCaptureState {
+            case "WAIT_ARM_ACK", "C1_PLAYING", "WAIT_C2", "CAPTURE_TAIL": return "正在采集，请稍候"
+            case "FINALIZE": return "正在分析与保存"
+            case "IDLE": return "Linux 采集会话未运行"
+            case "UNKNOWN": return "等待 Linux 状态…"
+            default: return "Linux 状态：\(responder.linuxCaptureState)"
+            }
+        }()
+        let detail = ready
+            ? "现在点击下方按钮即可开始新一轮"
+            : (queued > 0 ? "当前轮结束后会自动开始，无需重复点击" : "完成后这里会变绿并提示可再次采集")
+        let color: Color = paused ? .gray : (queued > 0 ? .orange : (ready ? .green : .cyan))
+        return HStack(spacing: 12) {
+            Image(systemName: ready ? "checkmark.circle.fill" : (queued > 0 ? "clock.badge.checkmark.fill" : "waveform.circle.fill"))
+                .font(.title2).foregroundStyle(color)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.subheadline.bold())
+                Text(detail).font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Circle().fill(color).frame(width: 11, height: 11)
+        }
+        .padding(12)
+        .background(color.opacity(0.13), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(color.opacity(0.55), lineWidth: 1))
+        .accessibilityElement(children: .combine)
     }
 
     private var testCard: some View {

@@ -111,6 +111,9 @@ struct MeasurementQualityResult: Sendable {
     let passed: Bool
     let overall: String
     let failureReasons: [String]
+    let warnings: [String]
+    let c2CorrelationReceived: Bool
+    let c2DirectPathConsistent: Bool
     let tofAvailable: Bool
 
     init?(json: [String: Any]) {
@@ -126,6 +129,9 @@ struct MeasurementQualityResult: Sendable {
         self.passed = passed
         overall = JSONWire.string(json, "quality_overall") ?? (passed ? "PASS" : "FAIL")
         failureReasons = JSONWire.strings(json, "quality_failure_reasons")
+        warnings = JSONWire.strings(json, "quality_warnings")
+        c2CorrelationReceived = JSONWire.bool(json, "c2_correlation_received") ?? false
+        c2DirectPathConsistent = JSONWire.bool(json, "c2_direct_path_consistent") ?? false
         tofAvailable = JSONWire.bool(json, "tof_available") ?? false
     }
 }

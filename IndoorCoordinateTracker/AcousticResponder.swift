@@ -1225,20 +1225,31 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
                     return .init(accepted: false, reason: "session_id_mismatch")
                 }
                 let reasonText = quality.failureReasons.isEmpty
-                    ? quality.overall
+                    ? (quality.warnings.isEmpty ? quality.overall : quality.warnings.joined(separator: "; "))
                     : quality.failureReasons.joined(separator: "; ")
                 self.measurementQualityReceived(
                     quality.sessionID, quality.measurementID, quality.passed, reasonText
                 )
                 DispatchQueue.main.async {
-                    self.lastLinuxQuality = "#\(quality.measurementID) \(quality.passed ? "PASS" : "FAIL") · ToF \(quality.tofAvailable ? "可用" : "不可用")"
+                    let c2State: String
+                    if !quality.c2CorrelationReceived {
+                        c2State = "C2 未收到"
+                    } else if !quality.c2DirectPathConsistent {
+                        c2State = "C2 已收到 · 直达峰不一致"
+                    } else {
+                        c2State = "C2 已收到 · 直达峰一致"
+                    }
+                    self.lastLinuxQuality = "#\(quality.measurementID) \(quality.passed ? "PASS" : "FAIL") · \(c2State) · ToF \(quality.tofAvailable ? "可用" : "不可用")"
                 }
-                self.appendLog("MEASUREMENT_QUALITY from=\(source) measurement=\(quality.measurementID) pass=\(quality.passed) overall=\(quality.overall) tof=\(quality.tofAvailable)")
+                self.appendLog("MEASUREMENT_QUALITY from=\(source) measurement=\(quality.measurementID) pass=\(quality.passed) overall=\(quality.overall) c2_received=\(quality.c2CorrelationReceived) direct_path_consistent=\(quality.c2DirectPathConsistent) tof=\(quality.tofAvailable)")
                 self.storage?.appendEvent([
                     "type": "measurement_quality", "protocol_version": quality.protocolVersion,
                     "session_id": quality.sessionID, "measurement_id": quality.measurementID,
                     "quality_pass": quality.passed, "quality_overall": quality.overall,
                     "quality_failure_reasons": quality.failureReasons,
+                    "quality_warnings": quality.warnings,
+                    "c2_correlation_received": quality.c2CorrelationReceived,
+                    "c2_direct_path_consistent": quality.c2DirectPathConsistent,
                     "tof_available": quality.tofAvailable, "source": source
                 ])
                 return .init(accepted: true, reason: "quality_applied")

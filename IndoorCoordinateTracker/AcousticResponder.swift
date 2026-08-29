@@ -23,6 +23,14 @@ enum UDPTestState: Sendable {
 }
 
 final class AcousticResponder: ObservableObject, @unchecked Sendable {
+    private struct PendingReply {
+        let session: String
+        let measurement: Int64
+        let event: String
+        let semaphore: DispatchSemaphore
+        var accepted: Bool?
+        var reason: String?
+    }
     let monitor = AcousticMonitorStore()
     @Published private(set) var isRunning = false
     @Published private(set) var isPaused = false
@@ -85,7 +93,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     private var cooldownUntilSample: Int64 = 0
     private var armedAtSample: Int64 = 0
     private var latestAnchor: CaptureAnchor?
-    private var pendingReply: (session: String, measurement: Int64, event: String, semaphore: DispatchSemaphore)?
+    private var pendingReply: PendingReply?
     private var pendingCaptureRequestID: String?
     private var pendingLidarMapCommandID: String?
     private var pendingSharedOriginCommandID: String?
@@ -785,6 +793,76 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         }
 
         captureLock.lock(); let recording = captured; captureLock.unlock()
+        var selfDetectionRows: [[String: Any]] = []
+        var selfDetectionDelays: [Int64] = []
+        var selfDetectionScores: [Double] = []
+        for index in playbackRows.indices {
+            guard let marker = playbackRows[index]["ios_capture_start_sample"] as? Int else { continue }
+            let nextMarker = index + 1 < playbackRows.count
+                ? playbackRows[index + 1]["ios_capture_start_sample"] as? Int
+                : nil
+            let windowStart = max(0, marker - 2_400)
+            let nominalEnd = marker + 43_200
+            let windowEnd = min(recording.count, nextMarker.map { min(nominalEnd, $0 - 2_400) } ?? nominalEnd)
+            let detection: LocalC2Detection? = windowEnd > windowStart
+                ? LocalC2AcousticDetector.detect(
+                    audio: Array(recording[windowStart..<windowEnd]),
+                    windowStartSample: Int64(windowStart),
+                    fullTemplate: probe.samples,
+                    searchStartSample: Int64(marker)
+                )
+                : nil
+            let delay = detection.map { $0.t3Sample - Int64(marker) }
+            if let detection, let delay {
+                selfDetectionDelays.append(delay)
+                selfDetectionScores.append(detection.score)
+            }
+            let row: [String: Any] = [
+                "index": index + 1,
+                "playback_issue_capture_sample": marker,
+                "detected": detection != nil,
+                "t3_sample": detection.map { $0.t3Sample as Any } ?? NSNull(),
+                "issue_to_detection_samples": delay.map { $0 as Any } ?? NSNull(),
+                "issue_to_detection_ms": delay.map { (Double($0) * 1_000.0 / ProbeDefaults.sampleRate) as Any } ?? NSNull(),
+                "score": detection.map { $0.score as Any } ?? NSNull(),
+                "segment_offset_samples": detection.map { $0.segmentOffsetSamples as Any } ?? NSNull(),
+                "segment_length_samples": detection.map { $0.segmentLengthSamples as Any } ?? NSNull()
+            ]
+            selfDetectionRows.append(row)
+            playbackRows[index]["self_acoustic_detection"] = row
+        }
+        let sortedDelays = selfDetectionDelays.sorted()
+        let delayMean = selfDetectionDelays.isEmpty ? nil
+            : Double(selfDetectionDelays.reduce(0, +)) / Double(selfDetectionDelays.count)
+        let delayMedian: Double? = sortedDelays.isEmpty ? nil : {
+            let middle = sortedDelays.count / 2
+            return sortedDelays.count.isMultiple(of: 2)
+                ? Double(sortedDelays[middle - 1] + sortedDelays[middle]) / 2.0
+                : Double(sortedDelays[middle])
+        }()
+        let delayStddev = delayMean.map { mean in
+            sqrt(selfDetectionDelays.reduce(0.0) { partial, value in
+                partial + pow(Double(value) - mean, 2)
+            } / Double(selfDetectionDelays.count))
+        }
+        let delayP95: Int64? = sortedDelays.isEmpty ? nil
+            : sortedDelays[min(sortedDelays.count - 1, max(0, Int(ceil(Double(sortedDelays.count) * 0.95)) - 1))]
+        let sortedScores = selfDetectionScores.sorted()
+        let scoreMedian: Double? = sortedScores.isEmpty ? nil : sortedScores[sortedScores.count / 2]
+        let selfDetectionSummary: [String: Any] = [
+            "method": "LocalC2AcousticDetector_same_as_handshake",
+            "threshold": 0.25,
+            "requested_rounds": command.repetitions,
+            "detected_rounds": selfDetectionDelays.count,
+            "success_rate": Double(selfDetectionDelays.count) / Double(max(1, command.repetitions)),
+            "issue_to_detection_samples_median": delayMedian.map { $0 as Any } ?? NSNull(),
+            "issue_to_detection_samples_mean": delayMean.map { $0 as Any } ?? NSNull(),
+            "issue_to_detection_samples_stddev": delayStddev.map { $0 as Any } ?? NSNull(),
+            "issue_to_detection_samples_p95": delayP95.map { $0 as Any } ?? NSNull(),
+            "score_median": scoreMedian.map { $0 as Any } ?? NSNull(),
+            "interpretation": "repeatability diagnostic; playback call is not physical acoustic emission time",
+            "rounds": selfDetectionRows
+        ]
         var metadata: [String: Any] = [
             "protocol": "AVTWIN_C2_BAND_TEST_V1",
             "test_id": command.testID,
@@ -799,6 +877,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             "linux_expected_c2_pcm_sha256": command.expectedC2PCMHash,
             "probe_hash_matches_linux": hashMatches,
             "playbacks": playbackRows,
+            "ios_self_acoustic_detection": selfDetectionSummary,
             "success": failure == nil,
             "error": failure.map { $0 as Any } ?? NSNull(),
         ]
@@ -828,10 +907,13 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             "probe_hash_matches_linux": hashMatches,
             "ios_output_path": savedPath,
         ])
+        let finalProgress = failure == nil
+            ? "RESULT: PASS · 本机声学检测 \(selfDetectionDelays.count)/\(command.repetitions)"
+                + (delayMedian.map { " · median=\(String(format: "%.1f", $0)) samples" } ?? "")
+                + "\n完整本机回环已保存\n\(savedPath)"
+            : "RESULT: FAIL · \(failure!)"
         DispatchQueue.main.async {
-            self.c2TestProgress += failure == nil
-                ? "RESULT: PASS · 完整本机回环已保存\n\(savedPath)"
-                : "RESULT: FAIL · \(failure!)"
+            self.c2TestProgress += finalProgress
             self.isTestingC2 = false
             if !savedPath.isEmpty { self.sessionShareURL = URL(fileURLWithPath: savedPath) }
         }
@@ -1265,7 +1347,13 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         DispatchQueue.main.async { self.stateName = "REPORTING" }
 
         let eventID = UUID().uuidString, acknowledgement = DispatchSemaphore(value: 0)
-        stateLock.lock(); pendingReply = (claim.sessionID, claim.measurementID, eventID, acknowledgement); stateLock.unlock()
+        stateLock.lock()
+        pendingReply = PendingReply(
+            session: claim.sessionID, measurement: claim.measurementID,
+            event: eventID, semaphore: acknowledgement,
+            accepted: nil, reason: nil
+        )
+        stateLock.unlock()
         let route = AVAudioSession.sharedInstance().currentRoute
         var reply: [String: Any] = [
             "type": "reply_timing", "protocol_version": 1, "session_id": claim.sessionID,
@@ -1302,6 +1390,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         storage?.appendEvent(txPoseEvent)
 
         var acknowledged = false
+        var acknowledgementRejectedReason: String?
         for attempt in 1...3 where isSessionRunning() {
             do {
                 _ = try UDPControlServer.sendJSON(reply, host: config.linuxHost, port: config.resultPort)
@@ -1311,9 +1400,23 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
                 stateLock.lock(); udpFailureCount += 1; stateLock.unlock()
                 storage?.appendEvent(["type": "udp_send", "android_event_id": eventID, "attempt": attempt, "success": false, "error": error.localizedDescription])
             }
-            if acknowledgement.wait(timeout: .now() + .milliseconds(350)) == .success, replyWasAcknowledged(eventID) { acknowledged = true; break }
+            if acknowledgement.wait(timeout: .now() + .milliseconds(500)) == .success {
+                let result = replyAcknowledgementResult(eventID)
+                if result.accepted == true {
+                    acknowledged = true
+                } else if result.accepted == false {
+                    acknowledgementRejectedReason = result.reason ?? "rejected"
+                }
+                break
+            }
         }
-        appendLog(acknowledged ? "REPLY_ACK_RECEIVED measurement=\(claim.measurementID) event=\(eventID)" : "REPLY_ACK_TIMEOUT measurement=\(claim.measurementID) event=\(eventID)")
+        if acknowledged {
+            appendLog("REPLY_ACK_RECEIVED measurement=\(claim.measurementID) event=\(eventID)")
+        } else if let acknowledgementRejectedReason {
+            appendLog("REPLY_ACK_REJECTED measurement=\(claim.measurementID) event=\(eventID) reason=\(acknowledgementRejectedReason)")
+        } else {
+            appendLog("REPLY_ACK_TIMEOUT measurement=\(claim.measurementID) event=\(eventID)")
+        }
         if !acknowledged { stateLock.lock(); udpFailureCount += 1; stateLock.unlock() }
         stateLock.lock(); pendingReply = nil; successCount += playbackVerified ? 1 : 0; let paused = pausedValue; cooldownUntilSample = totalSamples + 38_400; stateLock.unlock()
         if config.saveDebugAudio {
@@ -1362,17 +1465,24 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
 
     private func receiveReplyAcknowledgement(_ acknowledgement: ReplyAcknowledgement, source: String) {
         stateLock.lock()
-        let pending = pendingReply
-        let valid = acknowledgement.accepted && pending?.session == acknowledgement.sessionID
-            && pending?.measurement == acknowledgement.measurementID && pending?.event == acknowledgement.eventID
-        if valid { pending?.semaphore.signal() }
+        var pending = pendingReply
+        let matches = pending?.session == acknowledgement.sessionID
+            && pending?.measurement == acknowledgement.measurementID
+            && pending?.event == acknowledgement.eventID
+        if matches {
+            pending?.accepted = acknowledgement.accepted
+            pending?.reason = acknowledgement.reason
+            pendingReply = pending
+            pending?.semaphore.signal()
+        }
         stateLock.unlock()
         storage?.appendEvent([
             "type": "reply_ack_received", "session_id": acknowledgement.sessionID,
             "measurement_id": acknowledgement.measurementID, "android_event_id": acknowledgement.eventID,
-            "accepted": acknowledgement.accepted, "valid": valid, "source": source
+            "accepted": acknowledgement.accepted, "valid": matches,
+            "reason": acknowledgement.reason, "source": source
         ])
-        appendLog("REPLY_ACK from=\(source) measurement=\(acknowledgement.measurementID) valid=\(valid)")
+        appendLog("REPLY_ACK from=\(source) measurement=\(acknowledgement.measurementID) matched=\(matches) accepted=\(acknowledgement.accepted) reason=\(acknowledgement.reason)")
     }
 
     private func installAudioNotifications() {
@@ -1472,7 +1582,12 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     private func publishStatus(_ value: String) { DispatchQueue.main.async { self.status = value } }
     private func publishCaptureRequestStatus(_ value: String) { DispatchQueue.main.async { self.captureRequestStatus = value } }
     private func isSessionRunning() -> Bool { stateLock.lock(); defer { stateLock.unlock() }; return runningValue }
-    private func replyWasAcknowledged(_ eventID: String) -> Bool { stateLock.lock(); defer { stateLock.unlock() }; return pendingReply?.event == eventID }
+    private func replyAcknowledgementResult(_ eventID: String) -> (accepted: Bool?, reason: String?) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard pendingReply?.event == eventID else { return (nil, nil) }
+        return (pendingReply?.accepted, pendingReply?.reason)
+    }
     private static func uptimeMilliseconds() -> Int64 { Int64(ProcessInfo.processInfo.systemUptime * 1_000) }
     private static func project(hostTime: UInt64, from anchor: CaptureAnchor) -> Int64 {
         if hostTime >= anchor.hostTime { return anchor.sample + Int64((AVAudioTime.seconds(forHostTime: hostTime - anchor.hostTime) * ProbeDefaults.sampleRate).rounded()) }

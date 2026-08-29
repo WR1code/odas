@@ -45,7 +45,6 @@ struct ContentView: View {
     @AppStorage("calibrationPort") private var calibrationPort = "5010"
     @AppStorage("saveDebugAudio") private var saveDebugAudio = false
     @AppStorage("linuxRemoteStartEnabled") private var linuxRemoteStartEnabled = true
-    @AppStorage("sharedOriginMode") private var sharedOriginMode = "linux_microphone"
     @AppStorage("manualX") private var manualX = "0"
     @AppStorage("manualY") private var manualY = "0"
     @AppStorage("manualZ") private var manualZ = "0"
@@ -236,13 +235,23 @@ struct ContentView: View {
 
     private func poseCard(for page: AppPage, includeSpatialControls: Bool) -> some View {
         let pose = poseSelection.snapshot()
+        let sharedPosition = responder.sharedPhonePosition(for: pose)
+        let displayedPosition = sharedPosition ?? pose.position
+        let sharedCoordinatesApplied = sharedPosition != nil
+        let displayedYaw = sharedCoordinatesApplied
+            ? responder.sharedYawDegrees(for: pose)
+            : pose.yawDegrees
         return VStack(alignment: .leading, spacing: 9) {
             Label("响应位姿", systemImage: "viewfinder").font(.subheadline.bold())
             Picker("位姿来源", selection: Binding(
                 get: { poseSelection.mode }, set: { poseSelection.setMode($0) }
             )) { ForEach(PoseSourceMode.allCases) { Text($0.rawValue).tag($0) } }
             .pickerStyle(.segmented)
-            Text("世界坐标：重置时手机水平前方为 +X、左侧为 +Y，世界向上为 +Z")
+            Text(
+                sharedCoordinatesApplied
+                    ? "共享坐标：Linux / UMA-8 中心为 (0,0,0)；iPhone 显示相对 UMA-8 的位置，+Z 向上"
+                    : "尚未应用共享坐标；当前临时显示 ARKit 本地坐标"
+            )
                 .font(.caption2).foregroundStyle(.secondary)
             if poseSelection.mode == .manual {
                 HStack { numberField("X m", $manualX); numberField("Y m", $manualY); numberField("Z m", $manualZ) }
@@ -253,15 +262,24 @@ struct ContentView: View {
                 .buttonStyle(.bordered)
                 Text(poseSelection.manualSummary).font(.caption2).foregroundStyle(.secondary)
             }
-            HStack { coordinate("X", pose.position.x); coordinate("Y", pose.position.y); coordinate("Z", pose.position.z) }
+            HStack {
+                coordinate("X", displayedPosition.x)
+                coordinate("Y", displayedPosition.y)
+                coordinate("Z", displayedPosition.z)
+            }
             Text(String(
                 format: "yaw %.1f°  pitch %.1f°  roll %.1f° | %@",
-                pose.yawDegrees, pose.pitchDegrees, pose.rollDegrees,
+                displayedYaw, pose.pitchDegrees, pose.rollDegrees,
                 poseSelection.mode == .arkit ? poseTracker.statusText : "manual"
             ))
             .font(.caption.monospacedDigit())
-            XYHeadingView(yawDegrees: responder.sharedYawDegrees(for: pose))
+            XYHeadingView(
+                yawDegrees: displayedYaw,
+                usesSharedFrame: sharedCoordinatesApplied
+            )
                 .frame(height: 150)
+            // The level is deliberately based on the phone body's pitch and
+            // roll. Rebasing the horizontal position/yaw must not move it.
             BubbleLevelView(pitchDegrees: pose.pitchDegrees, rollDegrees: pose.rollDegrees)
                 .frame(height: 205)
             cameraPreview(for: page)
@@ -275,18 +293,11 @@ struct ContentView: View {
                 }
             }
             if includeSpatialControls, poseSelection.mode == .arkit {
-                Picker("共享原点", selection: $sharedOriginMode) {
-                    Text("Linux / UMA-8 原点").tag("linux_microphone")
-                    Text("手机当前位置原点").tag("iphone_current")
-                }
-                .pickerStyle(.segmented)
                 Button {
-                    responder.requestSharedOrigin(mode: sharedOriginMode)
+                    responder.requestSharedOrigin(mode: "linux_microphone")
                 } label: {
                     Label(
-                        sharedOriginMode == "linux_microphone"
-                            ? "命令 Linux：以 UMA-8 中心设为共享零点"
-                            : "以手机当前位置重置共享零点与 AR 原点",
+                        "同步 Linux / iPhone 相对坐标",
                         systemImage: "scope"
                     ).frame(maxWidth: .infinity)
                 }
@@ -375,7 +386,7 @@ struct ContentView: View {
                 Spacer()
                 Text(positionText(linux)).monospacedDigit()
             }
-            Text("共享 frame：\(responder.sharedFrameID)；AR 中黄色=共享原点，紫色=Linux/UMA-8。")
+            Text("共享 frame：\(responder.sharedFrameID)；Linux/UMA-8 固定为零点，iPhone 为相对坐标。AR 中黄色=共享原点，紫色=Linux/UMA-8。")
                 .font(.caption2).foregroundStyle(.secondary)
         }
         .font(.caption)
@@ -850,11 +861,13 @@ private struct PointCloudViewerScreen: View {
 
 private struct XYHeadingView: View {
     let yawDegrees: Double
+    let usesSharedFrame: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("共享 XY 坐标系 / iPhone 当前朝向").font(.caption.bold())
+                Text(usesSharedFrame ? "UMA-8 共享 XY / iPhone 当前朝向" : "ARKit 本地 XY / iPhone 当前朝向")
+                    .font(.caption.bold())
                 Spacer()
                 Text(String(format: "%+.1f°", yawDegrees)).font(.caption.monospacedDigit()).foregroundStyle(.cyan)
             }
@@ -881,8 +894,10 @@ private struct XYHeadingView: View {
                 arrow.addLine(to: CGPoint(x: tip.x - wing * cos(angle + CGFloat.pi / 6), y: tip.y - wing * sin(angle + CGFloat.pi / 6)))
                 context.stroke(arrow, with: .color(.cyan), style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
 
-                context.draw(Text("+X 前").font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: center.x, y: 8), anchor: .top)
-                context.draw(Text("+Y 左").font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: center.x - radius - 6, y: center.y), anchor: .trailing)
+                let xLabel = usesSharedFrame ? "+X 共享" : "+X AR"
+                let yLabel = usesSharedFrame ? "+Y 共享" : "+Y AR"
+                context.draw(Text(xLabel).font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: center.x, y: 8), anchor: .top)
+                context.draw(Text(yLabel).font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: center.x - radius - 6, y: center.y), anchor: .trailing)
             }
             .background(.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
         }

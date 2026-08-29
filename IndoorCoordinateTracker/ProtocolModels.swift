@@ -418,6 +418,7 @@ struct ReplyAcknowledgement: Sendable {
     let measurementID: Int64
     let eventID: String
     let accepted: Bool
+    let reason: String
 
     init?(json: [String: Any]) {
         guard JSONWire.string(json, "type") == "reply_ack",
@@ -430,5 +431,6 @@ struct ReplyAcknowledgement: Sendable {
         self.measurementID = measurementID
         self.eventID = eventID
         self.accepted = accepted
+        reason = JSONWire.string(json, "reason") ?? (accepted ? "accepted" : "rejected")
     }
 }

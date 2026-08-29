@@ -246,7 +246,10 @@ class ContinuousController:
             "receiver": "ios",
         }
         try:
-            self.udp_listener.send_json(
+            sender = getattr(
+                self.udp_listener, "send_json_quiet", self.udp_listener.send_json,
+            )
+            sender(
                 self.config.android_host, self.config.android_port, message,
             )
         except OSError as exc:

@@ -143,6 +143,17 @@ class UdpListener:
             f"{identifier} -> {host}:{port}"
         )
 
+    def send_json_quiet(self, host: str, port: int, message: dict[str, Any]) -> None:
+        """Send frequent telemetry without flooding the session log."""
+        payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        with self._send_lock:
+            bound_socket = self._socket
+            if bound_socket is not None:
+                bound_socket.sendto(payload, (host, port))
+            else:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    sock.sendto(payload, (host, port))
+
     def send_measurement_quality(
         self, host: str, port: int, *, session_id: str, measurement_id: int,
         quality_pass: bool, quality_overall: str,

@@ -159,6 +159,8 @@ class ContinuousController:
         self._udp_cursor = 0
         self._capture_request_results: dict[str, tuple[bool, str, str, int | None]] = {}
         self._capture_request_order: deque[str] = deque()
+        self._last_capture_state_sent = 0.0
+        self._last_capture_state_signature: tuple[Any, ...] | None = None
 
     def notify(self, message: str) -> None:
         line = f"{datetime.now().isoformat(timespec='milliseconds')} {message}"
@@ -180,12 +182,14 @@ class ContinuousController:
                 return False
             self._manual_requests += 1
         self._progress.set()
+        self._send_capture_state(force=True)
         return True
 
     def pause(self) -> None:
         self.pause_event.set()
         self.notify("自动采集已暂停；当前轮次仍会安全完成")
         self._emit_status()
+        self._send_capture_state(force=True)
 
     def resume(self) -> None:
         self.pause_event.clear()
@@ -194,18 +198,65 @@ class ContinuousController:
             self.next_due_sample = max(self.next_due_sample, getattr(self, "_ring", PcmRingBuffer(1)).end_sample)
         self.notify("自动采集已继续")
         self._progress.set()
+        self._send_capture_state(force=True)
 
     def stop(self) -> None:
         self.stop_event.set()
         self.notify("收到安全停止请求")
         self._progress.set()
+        self._send_capture_state(force=True)
 
     def _set_state(self, state: CaptureState) -> None:
         self.state = state
         self.notify(f"STATE -> {state.value}")
+        self._send_capture_state(force=True)
         self._emit_status()
 
+    def _send_capture_state(self, *, force: bool = False) -> None:
+        """Publish Linux's authoritative readiness and queue state to iOS."""
+        if self.udp_listener is None or not self.config.android_host:
+            return
+        with self._command_lock:
+            queued = self._manual_requests
+        paused = self.pause_event.is_set()
+        ready = (
+            self.state == CaptureState.ARMED
+            and not paused
+            and not self.stop_event.is_set()
+            and queued == 0
+        )
+        signature = (self.state.value, ready, queued, self.measurement_id, paused)
+        now = time.monotonic()
+        if (
+            not force
+            and signature == self._last_capture_state_signature
+            and now - self._last_capture_state_sent < 0.5
+        ):
+            return
+        message = {
+            "type": "linux_capture_state",
+            "protocol_version": 1,
+            "session_id": self.session_id,
+            "state": self.state.value,
+            "ready_for_capture": ready,
+            "queued_requests": queued,
+            "measurement_id": self.measurement_id,
+            "paused": paused,
+            "capture_mode": self.config.capture_mode,
+            "receiver": "ios",
+        }
+        try:
+            self.udp_listener.send_json(
+                self.config.android_host, self.config.android_port, message,
+            )
+        except OSError as exc:
+            self.notify(f"WARNING: Linux 采集状态发送失败：{exc}")
+            return
+        self._last_capture_state_signature = signature
+        self._last_capture_state_sent = now
+
     def _emit_status(self) -> None:
+        self._send_capture_state()
         if self.status_callback is None:
             return
         current = self._ring.end_sample if hasattr(self, "_ring") else 0

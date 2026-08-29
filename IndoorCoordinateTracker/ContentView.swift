@@ -45,6 +45,8 @@ struct ContentView: View {
     @AppStorage("calibrationPort") private var calibrationPort = "5010"
     @AppStorage("saveDebugAudio") private var saveDebugAudio = false
     @AppStorage("linuxRemoteStartEnabled") private var linuxRemoteStartEnabled = true
+    @AppStorage("linuxCaptureMode") private var linuxCaptureMode = "manual_continuous"
+    @AppStorage("linuxCaptureInterval") private var linuxCaptureInterval = "2.0"
     @AppStorage("manualX") private var manualX = "0"
     @AppStorage("manualY") private var manualY = "0"
     @AppStorage("manualZ") private var manualZ = "0"
@@ -617,6 +619,30 @@ struct ContentView: View {
                     Button("同步安全停止", role: .destructive) { responder.stop() }.buttonStyle(.borderedProminent)
                 }
             } else {
+                Picker("Linux 采集模式", selection: $linuxCaptureMode) {
+                    Text("人工连续").tag("manual_continuous")
+                    Text("定时连续").tag("timed_continuous")
+                }
+                .pickerStyle(.segmented)
+                if linuxCaptureMode == "timed_continuous" {
+                    HStack {
+                        Text("自动采集间隔").font(.caption)
+                        Spacer()
+                        TextField("2.0", text: $linuxCaptureInterval)
+                            .keyboardType(.decimalPad)
+                            .focused($isInputFocused)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 80)
+                            .fieldStyle()
+                        Text("秒").font(.caption)
+                    }
+                }
+                Text(
+                    linuxCaptureMode == "timed_continuous"
+                        ? "开始后 Linux 按设定间隔自动采集；仍可点击“立即采集一次”插入一轮。"
+                        : "点击开始后 Linux 自动排队第一轮；后续可继续点击“立即采集一次”。"
+                )
+                .font(.caption2).foregroundStyle(.secondary)
                 Button { startSession() } label: { Label("同步开始 iOS + Linux", systemImage: "play.circle.fill").frame(maxWidth: .infinity) }
                     .buttonStyle(.borderedProminent).tint(.green).disabled(!configurationValid || responder.isTestingC2)
             }
@@ -692,16 +718,27 @@ struct ContentView: View {
             .frame(maxHeight: 250).card()
     }
 
-    private var configurationValid: Bool { !linuxHost.isEmpty && UInt16(controlPort) != nil && UInt16(resultPort) != nil }
+    private var configurationValid: Bool {
+        let interval = Double(linuxCaptureInterval)
+        return !linuxHost.isEmpty && UInt16(controlPort) != nil && UInt16(resultPort) != nil
+            && ["manual_continuous", "timed_continuous"].contains(linuxCaptureMode)
+            && interval.map { $0.isFinite && $0 > 0 } == true
+    }
     private var idleConfigurationKey: String {
         [linuxHost, controlPort, resultPort, folder.selectedURL?.path ?? "default", probes.c1.internalPCMSHA256,
-         probes.c2.internalPCMSHA256, saveDebugAudio.description, linuxRemoteStartEnabled.description].joined(separator: "|")
+         probes.c2.internalPCMSHA256, saveDebugAudio.description, linuxRemoteStartEnabled.description,
+         linuxCaptureMode, linuxCaptureInterval].joined(separator: "|")
     }
     private func currentConfiguration() -> ResponderConfiguration? {
-        guard let control = UInt16(controlPort), let result = UInt16(resultPort), !linuxHost.isEmpty else { return nil }
+        guard let control = UInt16(controlPort), let result = UInt16(resultPort),
+              let interval = Double(linuxCaptureInterval), interval.isFinite, interval > 0,
+              ["manual_continuous", "timed_continuous"].contains(linuxCaptureMode),
+              !linuxHost.isEmpty else { return nil }
         return .init(
             linuxHost: linuxHost, controlPort: control, resultPort: result,
-            resultRootURL: folder.selectedURL, saveDebugAudio: saveDebugAudio, c1: probes.c1, c2: probes.c2
+            resultRootURL: folder.selectedURL, saveDebugAudio: saveDebugAudio,
+            c1: probes.c1, c2: probes.c2,
+            linuxCaptureMode: linuxCaptureMode, linuxCaptureInterval: interval
         )
     }
     private func configureIdleListener() {

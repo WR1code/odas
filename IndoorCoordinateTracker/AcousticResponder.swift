@@ -12,6 +12,8 @@ struct ResponderConfiguration: Sendable {
     let saveDebugAudio: Bool
     let c1: ProbeDefinition
     let c2: ProbeDefinition
+    let linuxCaptureMode: String
+    let linuxCaptureInterval: Double
     var startupCommandID: String? = nil
 }
 
@@ -171,7 +173,10 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         let config = ResponderConfiguration(
             linuxHost: host, controlPort: requested.controlPort, resultPort: requested.resultPort,
             resultRootURL: requested.resultRootURL, saveDebugAudio: requested.saveDebugAudio,
-            c1: requested.c1, c2: requested.c2, startupCommandID: requested.startupCommandID
+            c1: requested.c1, c2: requested.c2,
+            linuxCaptureMode: requested.linuxCaptureMode,
+            linuxCaptureInterval: requested.linuxCaptureInterval,
+            startupCommandID: requested.startupCommandID
         )
         preparedConfiguration = config
         controlServer?.stop()
@@ -206,30 +211,33 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             "ios_control_port": Int(config.controlPort)
         ]
         stateLock.lock(); pendingCaptureRequestID = requestID; stateLock.unlock()
-        publishCaptureRequestStatus("已发送单次采集请求，等待 Linux ACK")
+        publishCaptureRequestStatus("已发送单次采集请求，等待 Linux 接受或排队…")
         storage?.appendEvent(request)
         DispatchQueue.global(qos: .userInitiated).async {
             var anySendSucceeded = false
-            for attempt in 1...3 {
+            // Linux may be synchronously saving/plotting the previous round.
+            // Keep one stable request id alive long enough for its listener
+            // queue to be drained; Linux handles all repeats idempotently.
+            for attempt in 1...8 {
                 self.stateLock.lock(); let stillPending = self.pendingCaptureRequestID == requestID; self.stateLock.unlock()
                 guard stillPending else { return }
                 do {
                     _ = try UDPControlServer.sendJSON(request, host: config.linuxHost, port: config.resultPort)
                     anySendSucceeded = true
-                    self.appendLog("CAPTURE_ONCE_REQUEST_SENT request=\(requestID) attempt=\(attempt)/3")
+                    self.appendLog("CAPTURE_ONCE_REQUEST_SENT request=\(requestID) attempt=\(attempt)/8")
                 } catch {
                     self.appendLog("CAPTURE_ONCE_REQUEST_FAILED request=\(requestID) attempt=\(attempt)/3 error=\(error.localizedDescription)")
                 }
-                if attempt < 3 { Thread.sleep(forTimeInterval: 0.15) }
+                if attempt < 8 { Thread.sleep(forTimeInterval: 0.5) }
             }
             let didSend = anySendSucceeded
-            DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(900)) {
+            DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(1)) {
                 self.stateLock.lock()
                 let timedOut = self.pendingCaptureRequestID == requestID
                 if timedOut { self.pendingCaptureRequestID = nil }
                 self.stateLock.unlock()
                 if timedOut {
-                    self.publishCaptureRequestStatus(didSend ? "Linux ACK 超时，请检查会话状态" : "单次采集请求发送失败")
+                    self.publishCaptureRequestStatus(didSend ? "Linux 4.5 秒内未确认排队，请检查 Linux 会话日志" : "单次采集请求发送失败")
                 }
             }
         }
@@ -981,6 +989,9 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             "command_id": commandID,
             "linux_result_port": Int(config.resultPort),
             "mobile_control_port": Int(config.controlPort),
+            "capture_mode": config.linuxCaptureMode,
+            "interval_seconds": config.linuxCaptureInterval,
+            "start_immediately": config.linuxCaptureMode == "manual_continuous",
             "sender": "ios",
         ]
         storage?.appendEvent(command)
@@ -1173,9 +1184,15 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
                     return
                 }
                 let detail = acknowledgement.measurementID.map { " measurement=\($0)" } ?? ""
-                let message = acknowledgement.accepted
-                    ? "Linux 已接受单次采集请求\(detail)"
-                    : "Linux 拒绝单次采集：\(acknowledgement.reason)（\(acknowledgement.state)）"
+                let message: String
+                if acknowledgement.accepted,
+                   acknowledgement.reason == "accepted_queued_until_armed" {
+                    message = "Linux 已排队；当前轮收尾后自动采集\(detail)"
+                } else if acknowledgement.accepted {
+                    message = "Linux 已接受，正在开始单次采集\(detail)"
+                } else {
+                    message = "Linux 拒绝单次采集：\(acknowledgement.reason)（\(acknowledgement.state)）"
+                }
                 self.publishCaptureRequestStatus(message)
                 self.appendLog("CAPTURE_ONCE_ACK from=\(source) request=\(acknowledgement.requestID) accepted=\(acknowledgement.accepted) reason=\(acknowledgement.reason)\(detail)")
                 self.storage?.appendEvent([

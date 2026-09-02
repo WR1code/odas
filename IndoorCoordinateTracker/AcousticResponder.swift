@@ -2,6 +2,7 @@ import AVFoundation
 import Combine
 import Darwin
 import Foundation
+import simd
 import UIKit
 
 struct ResponderConfiguration: Sendable {
@@ -22,6 +23,54 @@ enum UDPTestState: Sendable {
     case testing
     case passed
     case failed
+}
+
+struct AcousticDirectionSnapshot: Sendable {
+    let endpointID: String
+    let displayName: String
+    let sourceDescription: String
+    let frameID: String
+    let bodyDirection: SIMD3<Double>?
+    let frameDirection: SIMD3<Double>?
+    let azimuthDegrees: Double?
+    let elevationDegrees: Double?
+    let aimingErrorDegrees: Double?
+    let positionReference: String
+    let warning: String?
+
+    var available: Bool { frameDirection != nil }
+
+    var wireObject: [String: Any] {
+        var value: [String: Any] = [
+            "endpoint_id": endpointID,
+            "display_name": displayName,
+            "source": sourceDescription,
+            "frame_id": frameID,
+            "available": available,
+            "position_reference": positionReference,
+            "body_axis_convention": "iphone_body_flu_x_forward_y_left_z_top",
+        ]
+        value["body_direction_xyz"] = bodyDirection.map { [$0.x, $0.y, $0.z] } ?? NSNull()
+        value["direction_xyz"] = frameDirection.map { [$0.x, $0.y, $0.z] } ?? NSNull()
+        value["azimuth_deg"] = azimuthDegrees.map { $0 as Any } ?? NSNull()
+        value["elevation_deg"] = elevationDegrees.map { $0 as Any } ?? NSNull()
+        value["aiming_error_to_uma8_deg"] = aimingErrorDegrees.map { $0 as Any } ?? NSNull()
+        value["warning"] = warning.map { $0 as Any } ?? NSNull()
+        return value
+    }
+}
+
+private struct AudioInputAcousticDescriptor: Sendable {
+    let dataSourceName: String
+    let orientationName: String
+    let polarPatternName: String
+    let bodyDirection: SIMD3<Double>?
+    let warning: String?
+
+    static let unavailable = AudioInputAcousticDescriptor(
+        dataSourceName: "unknown", orientationName: "unknown", polarPatternName: "unknown",
+        bodyDirection: nil, warning: "iOS 尚未报告当前内置麦克风 data source 朝向"
+    )
 }
 
 final class AcousticResponder: ObservableObject, @unchecked Sendable {
@@ -51,6 +100,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     @Published private(set) var lastT3Precise = false
     @Published private(set) var inputRoute = "unavailable"
     @Published private(set) var outputRoute = "unavailable"
+    @Published private(set) var inputDataSourceSummary = "data source 未知"
     @Published private(set) var logText = ""
     @Published private(set) var sessionLogPath = ""
     @Published private(set) var sessionShareURL: URL?
@@ -106,6 +156,8 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     private let phoneSourceSessionID = UUID().uuidString
     private var phoneSourceEpoch = 0
     private var sharedFromPhoneSourceRows: [[Double]]?
+    private var sharedFrameIDValue = "--"
+    private var sharedLinuxPositionValue: SIMD3<Double>?
     private var lidarMapAckReceived = false
     private var pendingStartupCommandID: String?
     private var remoteStopPending = false
@@ -115,6 +167,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     private var replyDelayValue: Int64?
     private var t3PreciseValue = false
     private var lastPoseValue: DevicePose?
+    private var inputAcousticDescriptor = AudioInputAcousticDescriptor.unavailable
     private var testRunningValue = false
     private var debugCapture: (measurement: Int64, samples: [Float], targetCount: Int)?
     private var idleListenerEnabled = true
@@ -457,6 +510,142 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         return atan2(sharedForwardY, sharedForwardX) * 180 / .pi
     }
 
+    func microphoneDirection(for pose: DevicePose) -> AcousticDirectionSnapshot {
+        stateLock.lock()
+        let descriptor = inputAcousticDescriptor
+        stateLock.unlock()
+        return acousticDirection(
+            endpointID: "ios_input_microphone",
+            displayName: "输入麦克风",
+            sourceDescription: "av_audio_session_data_source:\(descriptor.dataSourceName); orientation=\(descriptor.orientationName); polar_pattern=\(descriptor.polarPatternName)",
+            bodyDirection: descriptor.bodyDirection,
+            pose: pose,
+            warning: descriptor.warning
+        )
+    }
+
+    func speakerDirection(for pose: DevicePose) -> AcousticDirectionSnapshot {
+        acousticDirection(
+            endpointID: "ios_c2_speaker",
+            displayName: "C2 扬声器",
+            sourceDescription: "nominal_bottom_edge_axis_v1",
+            bodyDirection: SIMD3<Double>(0, 0, -1),
+            pose: pose,
+            warning: "名义底边声轴；iOS 未提供扬声器实际辐射主轴，需按机型实测标定"
+        )
+    }
+
+    private func acousticDirection(
+        endpointID: String,
+        displayName: String,
+        sourceDescription: String,
+        bodyDirection: SIMD3<Double>?,
+        pose: DevicePose,
+        warning: String?
+    ) -> AcousticDirectionSnapshot {
+        stateLock.lock()
+        let rows = sharedFromPhoneSourceRows
+        let sharedFrame = sharedFrameIDValue
+        let linuxPosition = sharedLinuxPositionValue
+        stateLock.unlock()
+        guard let bodyDirection, simd_length(bodyDirection) > 1e-9 else {
+            return AcousticDirectionSnapshot(
+                endpointID: endpointID, displayName: displayName,
+                sourceDescription: sourceDescription, frameID: rows == nil ? pose.frameID : sharedFrame,
+                bodyDirection: nil, frameDirection: nil, azimuthDegrees: nil,
+                elevationDegrees: nil, aimingErrorDegrees: nil,
+                positionReference: "arkit_camera_origin; acoustic_center_offset_uncalibrated",
+                warning: warning
+            )
+        }
+        let normalizedBody = simd_normalize(bodyDirection)
+        let sourceDirection = simd_normalize(pose.orientation.act(normalizedBody))
+        let sourcePosition = pose.position
+        let direction: SIMD3<Double>
+        let position: SIMD3<Double>
+        let frameID: String
+        if let rows {
+            direction = Self.normalizedDirection(SIMD3<Double>(
+                rows[0][0] * sourceDirection.x + rows[0][1] * sourceDirection.y + rows[0][2] * sourceDirection.z,
+                rows[1][0] * sourceDirection.x + rows[1][1] * sourceDirection.y + rows[1][2] * sourceDirection.z,
+                rows[2][0] * sourceDirection.x + rows[2][1] * sourceDirection.y + rows[2][2] * sourceDirection.z
+            ))
+            position = SIMD3<Double>(
+                rows[0][0] * sourcePosition.x + rows[0][1] * sourcePosition.y + rows[0][2] * sourcePosition.z + rows[0][3],
+                rows[1][0] * sourcePosition.x + rows[1][1] * sourcePosition.y + rows[1][2] * sourcePosition.z + rows[1][3],
+                rows[2][0] * sourcePosition.x + rows[2][1] * sourcePosition.y + rows[2][2] * sourcePosition.z + rows[2][3]
+            )
+            frameID = sharedFrame
+        } else {
+            direction = sourceDirection
+            position = sourcePosition
+            frameID = pose.frameID
+        }
+        let azimuth = atan2(direction.y, direction.x) * 180 / .pi
+        let elevation = atan2(direction.z, hypot(direction.x, direction.y)) * 180 / .pi
+        var aimingError: Double?
+        if rows != nil, let target = linuxPosition {
+            let delta = target - position
+            if simd_length(delta) > 1e-6 {
+                let targetDirection = simd_normalize(delta)
+                aimingError = acos(max(-1.0, min(1.0, simd_dot(direction, targetDirection)))) * 180 / .pi
+            }
+        }
+        return AcousticDirectionSnapshot(
+            endpointID: endpointID, displayName: displayName,
+            sourceDescription: sourceDescription, frameID: frameID,
+            bodyDirection: normalizedBody, frameDirection: direction,
+            azimuthDegrees: azimuth, elevationDegrees: elevation,
+            aimingErrorDegrees: aimingError,
+            positionReference: "arkit_camera_origin; acoustic_center_offset_uncalibrated",
+            warning: warning
+        )
+    }
+
+    private func acousticOrientationWireFields(for pose: DevicePose) -> [String: Any] {
+        [
+            "ios_microphone_acoustic_direction": microphoneDirection(for: pose).wireObject,
+            "ios_speaker_acoustic_direction": speakerDirection(for: pose).wireObject,
+        ]
+    }
+
+    private static func normalizedDirection(_ value: SIMD3<Double>) -> SIMD3<Double> {
+        let length = simd_length(value)
+        return length > 1e-9 ? value / length : .zero
+    }
+
+    private static func bodyDirection(for orientation: AVAudioSession.Orientation?) -> SIMD3<Double>? {
+        guard let orientation else { return nil }
+        if orientation == .back { return SIMD3<Double>(1, 0, 0) }
+        if orientation == .front { return SIMD3<Double>(-1, 0, 0) }
+        if orientation == .top { return SIMD3<Double>(0, 0, 1) }
+        if orientation == .bottom { return SIMD3<Double>(0, 0, -1) }
+        if orientation == .left { return SIMD3<Double>(0, 1, 0) }
+        if orientation == .right { return SIMD3<Double>(0, -1, 0) }
+        return nil
+    }
+
+    private static func inputDescriptor(_ port: AVAudioSessionPortDescription?) -> AudioInputAcousticDescriptor {
+        guard let port else { return .unavailable }
+        let dataSource = port.selectedDataSource ?? port.preferredDataSource
+        guard let dataSource else {
+            return AudioInputAcousticDescriptor(
+                dataSourceName: "unknown", orientationName: "unknown", polarPatternName: "unknown",
+                bodyDirection: nil,
+                warning: "当前 \(port.portName) 未提供 selectedDataSource；无法声明物理麦克风朝向"
+            )
+        }
+        let orientation = dataSource.orientation
+        let bodyDirection = bodyDirection(for: orientation)
+        return AudioInputAcousticDescriptor(
+            dataSourceName: dataSource.dataSourceName,
+            orientationName: orientation?.rawValue ?? "unknown",
+            polarPatternName: dataSource.selectedPolarPattern?.rawValue ?? "unknown",
+            bodyDirection: bodyDirection,
+            warning: bodyDirection == nil ? "iOS data source 未提供可映射的麦克风朝向" : nil
+        )
+    }
+
     private func receiveSharedOriginUpdate(_ update: SharedOriginUpdate, source: String) {
         stateLock.lock()
         let matches = pendingSharedOriginCommandID == update.commandID
@@ -467,6 +656,8 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         }
         if matches, update.accepted {
             sharedFromPhoneSourceRows = update.sharedFromPhoneSource
+            sharedFrameIDValue = update.sharedFrameID
+            sharedLinuxPositionValue = update.linuxMicrophonePosition
             if update.phoneResetRequired, let nextSourceEpoch {
                 phoneSourceEpoch = nextSourceEpoch
             }
@@ -1320,12 +1511,14 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             "detection_latency_samples": detection.detectionCompletedAtSample - t2
         ]
         event.merge(pose.wireFields) { _, new in new }
+        event.merge(acousticOrientationWireFields(for: pose)) { _, new in new }
         storage?.appendEvent(event)
         var poseEvent: [String: Any] = [
             "type": "manual_pose_snapshot", "session_id": claim.sessionID,
             "measurement_id": claim.measurementID, "captured_at": "c1_detected", "t2_sample": t2
         ]
         poseEvent.merge(pose.wireFields) { _, new in new }
+        poseEvent.merge(acousticOrientationWireFields(for: pose)) { _, new in new }
         storage?.appendEvent(poseEvent)
         storage?.appendPose(sessionID: claim.sessionID, measurementID: claim.measurementID, t2: t2, pose: pose)
         if configuration?.saveDebugAudio == true {
@@ -1421,6 +1614,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         if timingValid, let t3, let delay { reply["t3_sample"] = t3; reply["reply_delay_samples"] = delay; reply["error"] = NSNull() }
         else { reply["t3_sample"] = NSNull(); reply["reply_delay_samples"] = NSNull(); reply["error"] = playbackVerified ? "local_c2_acoustic_detection_unavailable" : "hardware_playback_not_verified" }
         reply.merge(txPose.wireFields) { _, new in new }
+        reply.merge(acousticOrientationWireFields(for: txPose)) { _, new in new }
         storage?.appendEvent(reply)
         var txPoseEvent: [String: Any] = [
             "type": "manual_pose_snapshot", "session_id": claim.sessionID,
@@ -1428,6 +1622,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             "t3_sample": t3.map { $0 as Any } ?? NSNull()
         ]
         txPoseEvent.merge(txPose.wireFields) { _, new in new }
+        txPoseEvent.merge(acousticOrientationWireFields(for: txPose)) { _, new in new }
         storage?.appendEvent(txPoseEvent)
 
         var acknowledged = false
@@ -1551,8 +1746,16 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
 
     private func updateRoutes() {
         let route = AVAudioSession.sharedInstance().currentRoute
-        let input = route.inputs.first?.portName ?? "unavailable", output = route.outputs.first?.portName ?? "unavailable"
-        DispatchQueue.main.async { self.inputRoute = input; self.outputRoute = output }
+        let inputPort = route.inputs.first
+        let input = inputPort?.portName ?? "unavailable", output = route.outputs.first?.portName ?? "unavailable"
+        let descriptor = Self.inputDescriptor(inputPort)
+        stateLock.lock(); inputAcousticDescriptor = descriptor; stateLock.unlock()
+        let detail = "\(descriptor.dataSourceName) | \(descriptor.orientationName) | \(descriptor.polarPatternName)"
+        DispatchQueue.main.async {
+            self.inputRoute = input
+            self.outputRoute = output
+            self.inputDataSourceSummary = detail
+        }
     }
 
     private func notifyCaptureReady(_ config: ResponderConfiguration, storageSessionID: String) {
@@ -1586,6 +1789,8 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
 
     private func updateSessionFile(status: String) {
         stateLock.lock()
+        let savedPose = lastPoseValue
+        let inputDescriptor = inputAcousticDescriptor
         var values: [String: Any] = [
             "protocol_version": 1, "session_id": localSessionID ?? "", "status": status,
             "sample_rate": Int(ProbeDefaults.sampleRate), "c1_name": configuration?.c1.name ?? "",
@@ -1595,12 +1800,19 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             "c1_rejected": rejectedCount, "c2_failures": c2FailureCount, "udp_failures": udpFailureCount,
             "last_t3_precise": t3PreciseValue,
             "last_pose_saved_from_c1": lastPoseValue != nil,
-            "input_route": inputRoute, "output_route": outputRoute
+            "input_route": inputRoute, "output_route": outputRoute,
+            "input_data_source": inputDescriptor.dataSourceName,
+            "input_data_source_orientation": inputDescriptor.orientationName,
+            "input_polar_pattern": inputDescriptor.polarPatternName,
         ]
-        if let lastPoseValue { values.merge(lastPoseValue.wireFields) { _, new in new } }
         if let replyDelayValue { values["last_reply_delay_samples"] = replyDelayValue }
         else { values["last_reply_delay_samples"] = NSNull() }
-        stateLock.unlock(); storage?.updateSession(values)
+        stateLock.unlock()
+        if let savedPose {
+            values.merge(savedPose.wireFields) { _, new in new }
+            values.merge(acousticOrientationWireFields(for: savedPose)) { _, new in new }
+        }
+        storage?.updateSession(values)
     }
 
     private func publishCounters() {

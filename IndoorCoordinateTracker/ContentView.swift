@@ -240,7 +240,6 @@ struct ContentView: View {
         let sharedPosition = responder.sharedPhonePosition(for: pose)
         let displayedPosition = sharedPosition ?? pose.position
         let sharedCoordinatesApplied = sharedPosition != nil
-        let microphoneDirection = responder.microphoneDirection(for: pose)
         let speakerDirection = responder.speakerDirection(for: pose)
         let displayedYaw = sharedCoordinatesApplied
             ? responder.sharedYawDegrees(for: pose)
@@ -283,9 +282,7 @@ struct ContentView: View {
             )
                 .frame(height: 150)
             AcousticDirectionPanel(
-                microphone: microphoneDirection,
-                speaker: speakerDirection,
-                inputDataSourceSummary: responder.inputDataSourceSummary
+                speaker: speakerDirection
             )
             // The level is deliberately based on the phone body's pitch and
             // roll. Rebasing the horizontal position/yaw must not move it.
@@ -736,7 +733,7 @@ struct ContentView: View {
     private var metricsCard: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack { Label("会话指标", systemImage: "gauge.with.dots.needle.67percent").font(.subheadline.bold()); Spacer(); Text(responder.stateName).font(.caption.monospaced()).foregroundStyle(.green) }
-            Text("iOS 本地 session：\(responder.localSessionID ?? "--")\nLinux session：\(responder.pairedLinuxSessionID ?? "--（等待 ARM）")\nmeasurement=\(responder.activeMeasurement.map { String($0) } ?? "--") | pending ARM=\(responder.pendingArmMeasurement.map { String($0) } ?? "--")\n成功=\(responder.successfulResponses) | C1 未通过=\(responder.c1Rejected) | C2 失败=\(responder.c2Failures) | UDP 失败=\(responder.udpFailures)\nLinux质量=\(responder.lastLinuxQuality)\nreply_delay_samples=\(responder.lastReplyDelaySamples.map { String($0) } ?? "--") | t3_precise=\(responder.lastT3Precise)\ninput=\(responder.inputRoute)\ninput data source=\(responder.inputDataSourceSummary)\noutput=\(responder.outputRoute)")
+            Text("iOS 本地 session：\(responder.localSessionID ?? "--")\nLinux session：\(responder.pairedLinuxSessionID ?? "--（等待 ARM）")\nmeasurement=\(responder.activeMeasurement.map { String($0) } ?? "--") | pending ARM=\(responder.pendingArmMeasurement.map { String($0) } ?? "--")\n成功=\(responder.successfulResponses) | C1 未通过=\(responder.c1Rejected) | C2 失败=\(responder.c2Failures) | UDP 失败=\(responder.udpFailures)\nLinux质量=\(responder.lastLinuxQuality)\nreply_delay_samples=\(responder.lastReplyDelaySamples.map { String($0) } ?? "--") | t3_precise=\(responder.lastT3Precise)\ninput=\(responder.inputRoute)\noutput=\(responder.outputRoute)")
                 .font(.system(size: 10, design: .monospaced)).textSelection(.enabled)
         }.card()
     }
@@ -988,22 +985,14 @@ private struct XYHeadingView: View {
 }
 
 private struct AcousticDirectionPanel: View {
-    let microphone: AcousticDirectionSnapshot
     let speaker: AcousticDirectionSnapshot
-    let inputDataSourceSummary: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Label("声学端点朝向（完整 3D）", systemImage: "dot.radiowaves.left.and.right")
+            Label("手机扬声器朝向（完整 3D）", systemImage: "speaker.wave.2.fill")
                 .font(.caption.bold())
-            Text("输入 data source：\(inputDataSourceSummary)")
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-            endpointRow(microphone)
-            Divider()
             endpointRow(speaker)
-            Text("方向由手机机身声轴 → 当前姿态 → 共享坐标变换得到；端点位置暂以 ARKit 相机原点代替，尚未加入声学中心偏移标定。")
+            Text("方向由手机底边名义声轴 → 当前姿态 → 共享坐标变换得到；端点位置暂以 ARKit 相机原点代替，尚未加入扬声器声学中心偏移标定。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }

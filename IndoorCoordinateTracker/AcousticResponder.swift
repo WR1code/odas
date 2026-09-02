@@ -60,19 +60,6 @@ struct AcousticDirectionSnapshot: Sendable {
     }
 }
 
-private struct AudioInputAcousticDescriptor: Sendable {
-    let dataSourceName: String
-    let orientationName: String
-    let polarPatternName: String
-    let bodyDirection: SIMD3<Double>?
-    let warning: String?
-
-    static let unavailable = AudioInputAcousticDescriptor(
-        dataSourceName: "unknown", orientationName: "unknown", polarPatternName: "unknown",
-        bodyDirection: nil, warning: "iOS 尚未报告当前内置麦克风 data source 朝向"
-    )
-}
-
 final class AcousticResponder: ObservableObject, @unchecked Sendable {
     private struct PendingReply {
         let session: String
@@ -100,7 +87,6 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     @Published private(set) var lastT3Precise = false
     @Published private(set) var inputRoute = "unavailable"
     @Published private(set) var outputRoute = "unavailable"
-    @Published private(set) var inputDataSourceSummary = "data source 未知"
     @Published private(set) var logText = ""
     @Published private(set) var sessionLogPath = ""
     @Published private(set) var sessionShareURL: URL?
@@ -167,7 +153,6 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     private var replyDelayValue: Int64?
     private var t3PreciseValue = false
     private var lastPoseValue: DevicePose?
-    private var inputAcousticDescriptor = AudioInputAcousticDescriptor.unavailable
     private var testRunningValue = false
     private var debugCapture: (measurement: Int64, samples: [Float], targetCount: Int)?
     private var idleListenerEnabled = true
@@ -510,20 +495,6 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         return atan2(sharedForwardY, sharedForwardX) * 180 / .pi
     }
 
-    func microphoneDirection(for pose: DevicePose) -> AcousticDirectionSnapshot {
-        stateLock.lock()
-        let descriptor = inputAcousticDescriptor
-        stateLock.unlock()
-        return acousticDirection(
-            endpointID: "ios_input_microphone",
-            displayName: "输入麦克风",
-            sourceDescription: "av_audio_session_data_source:\(descriptor.dataSourceName); orientation=\(descriptor.orientationName); polar_pattern=\(descriptor.polarPatternName)",
-            bodyDirection: descriptor.bodyDirection,
-            pose: pose,
-            warning: descriptor.warning
-        )
-    }
-
     func speakerDirection(for pose: DevicePose) -> AcousticDirectionSnapshot {
         acousticDirection(
             endpointID: "ios_c2_speaker",
@@ -602,9 +573,8 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         )
     }
 
-    private func acousticOrientationWireFields(for pose: DevicePose) -> [String: Any] {
+    private func speakerOrientationWireFields(for pose: DevicePose) -> [String: Any] {
         [
-            "ios_microphone_acoustic_direction": microphoneDirection(for: pose).wireObject,
             "ios_speaker_acoustic_direction": speakerDirection(for: pose).wireObject,
         ]
     }
@@ -612,38 +582,6 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     private static func normalizedDirection(_ value: SIMD3<Double>) -> SIMD3<Double> {
         let length = simd_length(value)
         return length > 1e-9 ? value / length : .zero
-    }
-
-    private static func bodyDirection(for orientation: AVAudioSession.Orientation?) -> SIMD3<Double>? {
-        guard let orientation else { return nil }
-        if orientation == .back { return SIMD3<Double>(1, 0, 0) }
-        if orientation == .front { return SIMD3<Double>(-1, 0, 0) }
-        if orientation == .top { return SIMD3<Double>(0, 0, 1) }
-        if orientation == .bottom { return SIMD3<Double>(0, 0, -1) }
-        if orientation == .left { return SIMD3<Double>(0, 1, 0) }
-        if orientation == .right { return SIMD3<Double>(0, -1, 0) }
-        return nil
-    }
-
-    private static func inputDescriptor(_ port: AVAudioSessionPortDescription?) -> AudioInputAcousticDescriptor {
-        guard let port else { return .unavailable }
-        let dataSource = port.selectedDataSource ?? port.preferredDataSource
-        guard let dataSource else {
-            return AudioInputAcousticDescriptor(
-                dataSourceName: "unknown", orientationName: "unknown", polarPatternName: "unknown",
-                bodyDirection: nil,
-                warning: "当前 \(port.portName) 未提供 selectedDataSource；无法声明物理麦克风朝向"
-            )
-        }
-        let orientation = dataSource.orientation
-        let bodyDirection = bodyDirection(for: orientation)
-        return AudioInputAcousticDescriptor(
-            dataSourceName: dataSource.dataSourceName,
-            orientationName: orientation?.rawValue ?? "unknown",
-            polarPatternName: dataSource.selectedPolarPattern?.rawValue ?? "unknown",
-            bodyDirection: bodyDirection,
-            warning: bodyDirection == nil ? "iOS data source 未提供可映射的麦克风朝向" : nil
-        )
     }
 
     private func receiveSharedOriginUpdate(_ update: SharedOriginUpdate, source: String) {
@@ -1511,14 +1449,14 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             "detection_latency_samples": detection.detectionCompletedAtSample - t2
         ]
         event.merge(pose.wireFields) { _, new in new }
-        event.merge(acousticOrientationWireFields(for: pose)) { _, new in new }
+        event.merge(speakerOrientationWireFields(for: pose)) { _, new in new }
         storage?.appendEvent(event)
         var poseEvent: [String: Any] = [
             "type": "manual_pose_snapshot", "session_id": claim.sessionID,
             "measurement_id": claim.measurementID, "captured_at": "c1_detected", "t2_sample": t2
         ]
         poseEvent.merge(pose.wireFields) { _, new in new }
-        poseEvent.merge(acousticOrientationWireFields(for: pose)) { _, new in new }
+        poseEvent.merge(speakerOrientationWireFields(for: pose)) { _, new in new }
         storage?.appendEvent(poseEvent)
         storage?.appendPose(sessionID: claim.sessionID, measurementID: claim.measurementID, t2: t2, pose: pose)
         if configuration?.saveDebugAudio == true {
@@ -1614,7 +1552,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
         if timingValid, let t3, let delay { reply["t3_sample"] = t3; reply["reply_delay_samples"] = delay; reply["error"] = NSNull() }
         else { reply["t3_sample"] = NSNull(); reply["reply_delay_samples"] = NSNull(); reply["error"] = playbackVerified ? "local_c2_acoustic_detection_unavailable" : "hardware_playback_not_verified" }
         reply.merge(txPose.wireFields) { _, new in new }
-        reply.merge(acousticOrientationWireFields(for: txPose)) { _, new in new }
+        reply.merge(speakerOrientationWireFields(for: txPose)) { _, new in new }
         storage?.appendEvent(reply)
         var txPoseEvent: [String: Any] = [
             "type": "manual_pose_snapshot", "session_id": claim.sessionID,
@@ -1622,7 +1560,7 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             "t3_sample": t3.map { $0 as Any } ?? NSNull()
         ]
         txPoseEvent.merge(txPose.wireFields) { _, new in new }
-        txPoseEvent.merge(acousticOrientationWireFields(for: txPose)) { _, new in new }
+        txPoseEvent.merge(speakerOrientationWireFields(for: txPose)) { _, new in new }
         storage?.appendEvent(txPoseEvent)
 
         var acknowledged = false
@@ -1746,15 +1684,10 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
 
     private func updateRoutes() {
         let route = AVAudioSession.sharedInstance().currentRoute
-        let inputPort = route.inputs.first
-        let input = inputPort?.portName ?? "unavailable", output = route.outputs.first?.portName ?? "unavailable"
-        let descriptor = Self.inputDescriptor(inputPort)
-        stateLock.lock(); inputAcousticDescriptor = descriptor; stateLock.unlock()
-        let detail = "\(descriptor.dataSourceName) | \(descriptor.orientationName) | \(descriptor.polarPatternName)"
+        let input = route.inputs.first?.portName ?? "unavailable", output = route.outputs.first?.portName ?? "unavailable"
         DispatchQueue.main.async {
             self.inputRoute = input
             self.outputRoute = output
-            self.inputDataSourceSummary = detail
         }
     }
 
@@ -1790,7 +1723,6 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
     private func updateSessionFile(status: String) {
         stateLock.lock()
         let savedPose = lastPoseValue
-        let inputDescriptor = inputAcousticDescriptor
         var values: [String: Any] = [
             "protocol_version": 1, "session_id": localSessionID ?? "", "status": status,
             "sample_rate": Int(ProbeDefaults.sampleRate), "c1_name": configuration?.c1.name ?? "",
@@ -1801,16 +1733,13 @@ final class AcousticResponder: ObservableObject, @unchecked Sendable {
             "last_t3_precise": t3PreciseValue,
             "last_pose_saved_from_c1": lastPoseValue != nil,
             "input_route": inputRoute, "output_route": outputRoute,
-            "input_data_source": inputDescriptor.dataSourceName,
-            "input_data_source_orientation": inputDescriptor.orientationName,
-            "input_polar_pattern": inputDescriptor.polarPatternName,
         ]
         if let replyDelayValue { values["last_reply_delay_samples"] = replyDelayValue }
         else { values["last_reply_delay_samples"] = NSNull() }
         stateLock.unlock()
         if let savedPose {
             values.merge(savedPose.wireFields) { _, new in new }
-            values.merge(acousticOrientationWireFields(for: savedPose)) { _, new in new }
+            values.merge(speakerOrientationWireFields(for: savedPose)) { _, new in new }
         }
         storage?.updateSession(values)
     }

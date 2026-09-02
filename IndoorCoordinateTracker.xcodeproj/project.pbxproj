@@ -1,0 +1,293 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* IndoorCoordinateTrackerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* IndoorCoordinateTrackerApp.swift */; };
+		A10000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* ContentView.swift */; };
+		A10000000000000000000003 /* ARCameraView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* ARCameraView.swift */; };
+		A10000000000000000000004 /* PoseTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* PoseTracker.swift */; };
+		A10000000000000000000005 /* ProtocolModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* ProtocolModels.swift */; };
+		A10000000000000000000006 /* UDPControlServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* UDPControlServer.swift */; };
+		A10000000000000000000007 /* SignalProcessing.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* SignalProcessing.swift */; };
+		A10000000000000000000008 /* AcousticResponder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* AcousticResponder.swift */; };
+		A10000000000000000000009 /* ARKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000B /* ARKit.framework */; };
+		A1000000000000000000000A /* SceneKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000C /* SceneKit.framework */; };
+		A1000000000000000000000B /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* AVFoundation.framework */; };
+		A1000000000000000000000C /* ProbeSignal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* ProbeSignal.swift */; };
+		A1000000000000000000000D /* SessionStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000F /* SessionStorage.swift */; };
+		A1000000000000000000000E /* LocalNetworkInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* LocalNetworkInfo.swift */; };
+		A1000000000000000000000F /* CryptoKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* CryptoKit.framework */; };
+		A10000000000000000000010 /* UniformTypeIdentifiers.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* UniformTypeIdentifiers.framework */; };
+		A10000000000000000000011 /* LocalC2AcousticDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* LocalC2AcousticDetector.swift */; };
+		A10000000000000000000012 /* SpatialPointCloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* SpatialPointCloud.swift */; };
+		A10000000000000000000013 /* Network.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000015 /* Network.framework */; };
+		A10000000000000000000014 /* AcousticVisualization.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000016 /* AcousticVisualization.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A20000000000000000000001 /* IndoorCoordinateTrackerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndoorCoordinateTrackerApp.swift; sourceTree = "<group>"; };
+		A20000000000000000000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A20000000000000000000003 /* ARCameraView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ARCameraView.swift; sourceTree = "<group>"; };
+		A20000000000000000000004 /* PoseTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PoseTracker.swift; sourceTree = "<group>"; };
+		A20000000000000000000005 /* ProtocolModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtocolModels.swift; sourceTree = "<group>"; };
+		A20000000000000000000006 /* UDPControlServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UDPControlServer.swift; sourceTree = "<group>"; };
+		A20000000000000000000007 /* SignalProcessing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignalProcessing.swift; sourceTree = "<group>"; };
+		A20000000000000000000008 /* AcousticResponder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AcousticResponder.swift; sourceTree = "<group>"; };
+		A20000000000000000000009 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A2000000000000000000000A /* AVTwinIOSResponder.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AVTwinIOSResponder.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A2000000000000000000000B /* ARKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ARKit.framework; path = System/Library/Frameworks/ARKit.framework; sourceTree = SDKROOT; };
+		A2000000000000000000000C /* SceneKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SceneKit.framework; path = System/Library/Frameworks/SceneKit.framework; sourceTree = SDKROOT; };
+		A2000000000000000000000D /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
+		A2000000000000000000000E /* ProbeSignal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProbeSignal.swift; sourceTree = "<group>"; };
+		A2000000000000000000000F /* SessionStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStorage.swift; sourceTree = "<group>"; };
+		A20000000000000000000010 /* LocalNetworkInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalNetworkInfo.swift; sourceTree = "<group>"; };
+		A20000000000000000000011 /* CryptoKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CryptoKit.framework; path = System/Library/Frameworks/CryptoKit.framework; sourceTree = SDKROOT; };
+		A20000000000000000000012 /* UniformTypeIdentifiers.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UniformTypeIdentifiers.framework; path = System/Library/Frameworks/UniformTypeIdentifiers.framework; sourceTree = SDKROOT; };
+		A20000000000000000000013 /* LocalC2AcousticDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalC2AcousticDetector.swift; sourceTree = "<group>"; };
+		A20000000000000000000014 /* SpatialPointCloud.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialPointCloud.swift; sourceTree = "<group>"; };
+		A20000000000000000000015 /* Network.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Network.framework; path = System/Library/Frameworks/Network.framework; sourceTree = SDKROOT; };
+		A20000000000000000000016 /* AcousticVisualization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AcousticVisualization.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A30000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000009 /* ARKit.framework in Frameworks */,
+				A1000000000000000000000A /* SceneKit.framework in Frameworks */,
+				A1000000000000000000000B /* AVFoundation.framework in Frameworks */,
+				A1000000000000000000000F /* CryptoKit.framework in Frameworks */,
+				A10000000000000000000010 /* UniformTypeIdentifiers.framework in Frameworks */,
+				A10000000000000000000013 /* Network.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A40000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				A40000000000000000000002 /* IndoorCoordinateTracker */,
+				A40000000000000000000003 /* Frameworks */,
+				A40000000000000000000004 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A40000000000000000000002 /* IndoorCoordinateTracker */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000001 /* IndoorCoordinateTrackerApp.swift */,
+				A20000000000000000000002 /* ContentView.swift */,
+				A20000000000000000000003 /* ARCameraView.swift */,
+				A20000000000000000000004 /* PoseTracker.swift */,
+				A20000000000000000000005 /* ProtocolModels.swift */,
+				A20000000000000000000006 /* UDPControlServer.swift */,
+				A20000000000000000000007 /* SignalProcessing.swift */,
+				A20000000000000000000008 /* AcousticResponder.swift */,
+				A2000000000000000000000E /* ProbeSignal.swift */,
+				A2000000000000000000000F /* SessionStorage.swift */,
+				A20000000000000000000010 /* LocalNetworkInfo.swift */,
+				A20000000000000000000013 /* LocalC2AcousticDetector.swift */,
+				A20000000000000000000014 /* SpatialPointCloud.swift */,
+				A20000000000000000000016 /* AcousticVisualization.swift */,
+				A20000000000000000000009 /* Info.plist */,
+			);
+			path = IndoorCoordinateTracker;
+			sourceTree = "<group>";
+		};
+		A40000000000000000000003 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				A2000000000000000000000B /* ARKit.framework */,
+				A2000000000000000000000C /* SceneKit.framework */,
+				A2000000000000000000000D /* AVFoundation.framework */,
+				A20000000000000000000011 /* CryptoKit.framework */,
+				A20000000000000000000012 /* UniformTypeIdentifiers.framework */,
+				A20000000000000000000015 /* Network.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		A40000000000000000000004 /* Products */ = {
+			isa = PBXGroup;
+			children = (A2000000000000000000000A /* AVTwinIOSResponder.app */);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A50000000000000000000001 /* AVTwinIOSResponder */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A90000000000000000000002 /* Build configuration list for PBXNativeTarget */;
+			buildPhases = (
+				A60000000000000000000001 /* Sources */,
+				A30000000000000000000001 /* Frameworks */,
+				A70000000000000000000001 /* Resources */,
+			);
+			buildRules = ();
+			dependencies = ();
+			name = AVTwinIOSResponder;
+			productName = AVTwinIOSResponder;
+			productReference = A2000000000000000000000A /* AVTwinIOSResponder.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A80000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = { A50000000000000000000001 = { CreatedOnToolsVersion = 16.0; }; };
+			};
+			buildConfigurationList = A90000000000000000000001 /* Build configuration list for PBXProject */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = zh_CN;
+			hasScannedForEncodings = 0;
+			knownRegions = (Base, en, zh_CN);
+			mainGroup = A40000000000000000000001;
+			productRefGroup = A40000000000000000000004 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (A50000000000000000000001 /* AVTwinIOSResponder */);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A70000000000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A60000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000001 /* IndoorCoordinateTrackerApp.swift in Sources */,
+				A10000000000000000000002 /* ContentView.swift in Sources */,
+				A10000000000000000000003 /* ARCameraView.swift in Sources */,
+				A10000000000000000000004 /* PoseTracker.swift in Sources */,
+				A10000000000000000000005 /* ProtocolModels.swift in Sources */,
+				A10000000000000000000006 /* UDPControlServer.swift in Sources */,
+				A10000000000000000000007 /* SignalProcessing.swift in Sources */,
+				A10000000000000000000008 /* AcousticResponder.swift in Sources */,
+				A1000000000000000000000C /* ProbeSignal.swift in Sources */,
+				A1000000000000000000000D /* SessionStorage.swift in Sources */,
+				A1000000000000000000000E /* LocalNetworkInfo.swift in Sources */,
+				A10000000000000000000011 /* LocalC2AcousticDetector.swift in Sources */,
+				A10000000000000000000012 /* SpatialPointCloud.swift in Sources */,
+				A10000000000000000000014 /* AcousticVisualization.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		B10000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		B10000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		B20000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = IndoorCoordinateTracker/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks");
+				MARKETING_VERSION = 0.14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.AVTwinIOSResponder;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		B20000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = IndoorCoordinateTracker/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks");
+				MARKETING_VERSION = 0.14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.AVTwinIOSResponder;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A90000000000000000000001 /* Build configuration list for PBXProject */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (B10000000000000000000001 /* Debug */, B10000000000000000000002 /* Release */);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A90000000000000000000002 /* Build configuration list for PBXNativeTarget */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (B20000000000000000000001 /* Debug */, B20000000000000000000002 /* Release */);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A80000000000000000000001 /* Project object */;
+}

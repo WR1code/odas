@@ -1,0 +1,16 @@
+rt_config:
+  max_depth: 10
+  num_samples: 50000
+  los: true
+  reflection: true
+  diffraction: false
+  scattering: true
+  scat_prob: 0.00001
+ir_config:
+  attn: 0.001
+  fs: 48000
+  ir_len: 24000
+  speed: 343.8
+  noise: 0.0
+  tx_pattern: uniform
+  rx_pattern: uniform

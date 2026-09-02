@@ -341,38 +341,64 @@
     void snk_tracks_process_format_text_json(snk_tracks_obj * obj) {
 
         unsigned int iTrack;
+        size_t offset;
+        int written;
 
-        obj->buffer[0] = 0x00;
+        offset = 0;
+        obj->buffer[0] = '\0';
 
-        sprintf(obj->buffer,"%s{\n",obj->buffer);
-        sprintf(obj->buffer,"%s    \"timeStamp\": %llu,\n",obj->buffer,obj->in->timeStamp);
-        sprintf(obj->buffer,"%s    \"src\": [\n",obj->buffer);
+        #define APPEND_JSON(...)                                              \
+            do {                                                              \
+                if (offset < 1024) {                                          \
+                    written = snprintf(obj->buffer + offset,                  \
+                                       1024 - offset,                         \
+                                       __VA_ARGS__);                          \
+                    if (written < 0) {                                        \
+                        obj->buffer[0] = '\0';                                \
+                        obj->bufferSize = 0;                                  \
+                        return;                                               \
+                    }                                                         \
+                    if ((size_t) written >= (1024 - offset)) {                \
+                        offset = 1023;                                        \
+                    }                                                         \
+                    else {                                                    \
+                        offset += (size_t) written;                           \
+                    }                                                         \
+                }                                                             \
+            } while (0)
+
+        APPEND_JSON("%s", "{\n");
+        APPEND_JSON("    \"timeStamp\": %llu,\n",
+                    obj->in->timeStamp);
+        APPEND_JSON("%s", "    \"src\": [\n");
 
         for (iTrack = 0; iTrack < obj->nTracks; iTrack++) {
 
-            sprintf(obj->buffer,"%s        { \"id\": %llu, \"tag\": \"%s\", \"x\": %1.3f, \"y\": %1.3f, \"z\": %1.3f, \"activity\": %1.3f }", 
-                    obj->buffer,
-                    obj->in->tracks->ids[iTrack],
-                    obj->in->tracks->tags[iTrack],
-                    obj->in->tracks->array[iTrack*3+0], 
-                    obj->in->tracks->array[iTrack*3+1], 
-                    obj->in->tracks->array[iTrack*3+2],
-                    obj->in->tracks->activity[iTrack]);
+            APPEND_JSON(
+                "        { \"id\": %llu, \"tag\": \"%s\", "
+                "\"x\": %1.3f, \"y\": %1.3f, \"z\": %1.3f, "
+                "\"activity\": %1.3f }",
+                obj->in->tracks->ids[iTrack],
+                obj->in->tracks->tags[iTrack],
+                obj->in->tracks->array[iTrack * 3 + 0],
+                obj->in->tracks->array[iTrack * 3 + 1],
+                obj->in->tracks->array[iTrack * 3 + 2],
+                obj->in->tracks->activity[iTrack]
+            );
 
             if (iTrack != (obj->nTracks - 1)) {
-
-                sprintf(obj->buffer,"%s,",obj->buffer);
-
+                APPEND_JSON("%s", ",");
             }
 
-            sprintf(obj->buffer,"%s\n",obj->buffer);
-
+            APPEND_JSON("%s", "\n");
         }
-        
-        sprintf(obj->buffer,"%s    ]\n",obj->buffer);
-        sprintf(obj->buffer,"%s}\n",obj->buffer);
 
-        obj->bufferSize = strlen(obj->buffer);
+        APPEND_JSON("%s", "    ]\n");
+        APPEND_JSON("%s", "}\n");
+
+        obj->bufferSize = offset;
+
+        #undef APPEND_JSON
 
     }
 

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "frame": {"handedness": "right", "up": "+Z", "forward": "+X", "left": "+Y", "units": "m"},
+  "room_dimensions_m": [6.0, 5.0, 2.8],
+  "objects": [
+    {"name": "floor", "center_m": [0.0, 0.0, -0.05], "size_m": [6.0, 5.0, 0.1], "material": "carpet"},
+    {"name": "ceiling", "center_m": [0.0, 0.0, 2.85], "size_m": [6.0, 5.0, 0.1], "material": "concrete"},
+    {"name": "wall_front", "center_m": [3.05, 0.0, 1.4], "size_m": [0.1, 5.0, 2.8], "material": "concrete"},
+    {"name": "wall_rear", "center_m": [-3.05, 0.0, 1.4], "size_m": [0.1, 5.0, 2.8], "material": "concrete"},
+    {"name": "wall_left", "center_m": [0.0, 2.55, 1.4], "size_m": [6.0, 0.1, 2.8], "material": "concrete"},
+    {"name": "wall_right", "center_m": [0.0, -2.55, 1.4], "size_m": [6.0, 0.1, 2.8], "material": "concrete"},
+    {"name": "table_top", "center_m": [0.6, -0.6, 0.75], "size_m": [1.4, 0.8, 0.08], "material": "wood"},
+    {"name": "cabinet", "center_m": [-2.5, 1.8, 1.0], "size_m": [0.45, 1.0, 2.0], "material": "wood"}
+  ],
+  "array_pose": {"translation_m": [0.0, 0.0, 1.2], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0]},
+  "source": {"position_m": [1.8, 0.7, 1.2], "orientation_xyz": [-1.0, 0.0, 0.0]}
+}

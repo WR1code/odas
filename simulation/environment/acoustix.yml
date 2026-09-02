@@ -1,0 +1,13 @@
+name: odas-acoustix
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - rapidfuzz
+      - pyyaml
+      - tqdm
+      # Sionna 0.18 is incompatible with Mitsuba 3.6+ (Dr.Jit API change).
+      - mitsuba==3.5.2
+      - tensorflow[and-cuda]==2.15.1

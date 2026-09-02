@@ -3,3 +3,22 @@ bin
 lib
 .vscode
 *.raw
+simulation/output/
+**/__pycache__/
+*.pyc
+.venv/
+.deps/
+.runtime/
+.gradle/
+.kotlin/
+*.zip
+*.apk
+rir_capture/output/
+avtwin_linux/output/
+
+# Local runtime, generated translation, and literature artifacts
+/logs/
+*.bak
+*.pdf
+/docs/top_venues_acoustic/.translation_cache/
+/docs/top_venues_acoustic/.boxed_translation_cache/
